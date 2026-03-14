@@ -71,13 +71,19 @@ async function purifiyBatch(batch, apiKey) {
     const messages = [
         {
             role: 'system',
-            content: `You are a domain validator. For each company, confirm whether the candidate domain belongs to that company.
+            content: `You are a company website domain validator. For each company and candidate domain, decide if the domain is a plausible official website for that company.
 Return ONLY JSON: {"results": [{"index": 0, "domain": "confirmed.com"}, ...]}
-- If the domain belongs to the company → include it as-is (bare domain, no http/www)
-- If the domain is wrong or empty → use domain: null
-- Never invent new domains`,
+
+Rules:
+- ACCEPT if the domain clearly relates to the company name (partial match, abbreviation, or known brand is fine)
+- ACCEPT if the domain looks like a plausible business website for that company type
+- ACCEPT abbreviated domains (e.g. "ddidental.com" for a dental company, "cdillc.com" for "CDI LLC")
+- ACCEPT domains extracted from search queries — they are Gemini's best guess, not confirmed
+- REJECT only if the domain is clearly unrelated to the company (e.g. a competitor, generic portal, or completely different industry)
+- REJECT if domain is empty or null
+- Never invent new domains — use only the candidate provided or null`,
         },
-        { role: 'user', content: `Validate:\n${items}` },
+        { role: 'user', content: `Validate these company domains:\n${items}` },
     ];
 
     for (let attempt = 0; attempt <= MAX_RETRY; attempt++) {

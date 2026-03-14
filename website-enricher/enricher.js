@@ -21,8 +21,7 @@ const { GeminiScraper }              = require('./geminiScraper');
 const { purifyDomains, stripDomain } = require('./deepseekPurifier');
 
 const POLL_INTERVAL_MS = 3000;
-const GEMINI_BATCH     = 5;
-const GEMINI_DELAY_MS  = 2000;
+const GEMINI_BATCH     = 5;   // companies per Gemini batch query
 const GEMINI_CDP_URL   = 'http://127.0.0.1:9224';
 
 // ── Load .env ─────────────────────────────────────────────────────────────────
@@ -143,7 +142,7 @@ async function run() {
     }
 
     // ── Self-test to verify Gemini is working ────────────────────────────────
-    console.log('🧪 [Enricher] Self-test: querying Gemini for "Google"...');
+    console.log('🧪 [Enricher] Self-test: querying Gemini for "Microsoft"...');
     const test = await gemini.selfTest(DEBUG_DIR);
     if (!test.ok) {
         console.error(`❌ Gemini self-test FAILED: ${test.error || 'wrong domain returned'}`);
@@ -218,20 +217,16 @@ async function run() {
             if (key) alreadyQueued.add(key);
         }
 
-        // ── Step 1: Gemini queries ──────────────────────────────────────────
-        const geminiResults = [];
-        for (let i = 0; i < batch.length; i++) {
-            const rec = batch[i];
-            try {
-                const domain = await gemini.findWebsite(rec.companyName, DEBUG_DIR);
-                geminiResults.push({ companyName: rec.companyName, geminiDomain: domain });
-            } catch (err) {
-                console.log(`⚠️ [Gemini] "${rec.companyName}": ${err.message}`);
-                geminiResults.push({ companyName: rec.companyName, geminiDomain: null });
-            }
-            if (i < batch.length - 1) {
-                await new Promise(r => setTimeout(r, GEMINI_DELAY_MS));
-            }
+        // ── Step 1: Gemini batch query — all companies in ONE message ─────
+        let geminiResults = [];
+        try {
+            geminiResults = await gemini.findWebsitesBatch(
+                batch.map(r => r.companyName),
+                DEBUG_DIR
+            );
+        } catch (err) {
+            console.log(`⚠️ [Gemini] Batch error: ${err.message}`);
+            geminiResults = batch.map(r => ({ companyName: r.companyName, geminiDomain: null }));
         }
 
         // ── Step 2: DeepSeek purification ───────────────────────────────────

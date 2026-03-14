@@ -20,7 +20,8 @@ class JobManager extends EventEmitter {
     constructor() {
         super();
         this.jobs     = this._load();
-        this.procs    = {};   // active scrape child processes
+        this.procs         = {};   // active scrape child processes
+        this.enricherProcs = {};   // active enricher child processes
     }
 
     _load() {
@@ -247,6 +248,72 @@ class JobManager extends EventEmitter {
         });
     }
 
+    // ─────────────────────────────────────────────────────────────────────
+    // ENRICHER: start / stop / logs
+    // ─────────────────────────────────────────────────────────────────────
+    startEnricher(id) {
+        const job = this.get(id);
+        if (!job) return { error: 'Job not found' };
+        if (this.enricherProcs[id]) return { error: 'Enricher already running' };
+
+        const script = path.join(ROOT_DIR, 'website-enricher', 'enricher.js');
+        if (!fs.existsSync(script)) return { error: 'website-enricher/enricher.js not found' };
+
+        job.enricherStatus = 'running';
+        job.enricherLog    = [];
+        this._save();
+        this.emit('update', job);
+
+        const child = spawn(process.execPath, [script], {
+            cwd: ROOT_DIR,
+            env: { ...process.env, JOB_DIR: job.dir },
+            stdio: ['ignore', 'pipe', 'pipe'],
+        });
+
+        this.enricherProcs[id] = child;
+
+        const onLine = (raw) => {
+            const line = raw.toString().trim();
+            if (!line) return;
+            job.enricherLog = job.enricherLog || [];
+            job.enricherLog.push(line);
+            if (job.enricherLog.length > 300) job.enricherLog.shift();
+            this.emit('log', { id, line, source: 'enricher' });
+            if (/CSV regenerated|Wrote.*domain|domains confirmed/i.test(line)) this._countLeads(job);
+            this._save();
+            this.emit('update', job);
+        };
+
+        child.stdout.on('data', d => d.toString().split('\n').forEach(onLine));
+        child.stderr.on('data', d => d.toString().split('\n').forEach(onLine));
+
+        child.on('exit', (code) => {
+            delete this.enricherProcs[id];
+            job.enricherStatus = code === 0 ? 'done' : 'stopped';
+            this._save();
+            this.emit('update', job);
+        });
+
+        this._save();
+        return this._safe(job);
+    }
+
+    stopEnricher(id) {
+        const job = this.get(id);
+        if (!job) return { error: 'Job not found' };
+        const child = this.enricherProcs[id];
+        if (child) {
+            try { child.kill('SIGTERM'); } catch {}
+            delete this.enricherProcs[id];
+        }
+        job.enricherStatus = 'stopped';
+        this._save();
+        this.emit('update', job);
+        return this._safe(job);
+    }
+
+    getEnricherLogs(id) { return this.get(id)?.enricherLog || []; }
+
     stop(id) {
         const job = this.get(id);
         if (!job) return null;
@@ -323,6 +390,7 @@ class JobManager extends EventEmitter {
             currentUrlIndex: j.currentUrlIndex || 0,
             createdAt: j.createdAt, logCount: j.logs?.length || 0,
             hasData,
+            enricherStatus: j.enricherStatus || 'idle',
         };
     }
 
