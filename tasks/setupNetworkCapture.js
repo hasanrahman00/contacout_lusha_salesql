@@ -726,19 +726,24 @@ function parseSalesQLResponse(body, store) {
             });
 
             let bestEmail = null;
-            if (jobEmails.length > 0) {
-                const hasMainType   = jobEmails.filter(e => (e.type || '').toLowerCase().includes('main'));
-                const p1 = hasMainType.filter(e => e.verified);
-                const p3 = jobEmails.filter(e => e.main && e.verified);
-                const p4 = jobEmails.filter(e => e.main);
-                const p5 = jobEmails.filter(e => e.verified);
+            if (jobEmails.length === 1) {
+                // Only one non-personal email — use it regardless of verified/main flags
+                bestEmail = jobEmails[0];
+            } else if (jobEmails.length > 1) {
+                // Multiple job emails — pick the best verified one
+                const hasMainType = jobEmails.filter(e => (e.type || '').toLowerCase().includes('main'));
+                const p1 = hasMainType.filter(e => e.verified);          // type=main job + verified
+                const p2 = hasMainType;                                   // type=main job (any)
+                const p3 = jobEmails.filter(e => e.main && e.verified);  // main:true + verified
+                const p4 = jobEmails.filter(e => e.main);                 // main:true (any)
+                const p5 = jobEmails.filter(e => e.verified);             // verified (any job)
 
-                if      (p1.length > 0)              bestEmail = p1[0];
-                else if (hasMainType.length === 1)   bestEmail = hasMainType[0];
-                else if (p3.length > 0)               bestEmail = p3[0];
-                else if (p4.length > 0)               bestEmail = p4[0];
-                else if (p5.length > 0)               bestEmail = p5[0];
-                else                                   bestEmail = jobEmails[0];
+                if      (p1.length > 0) bestEmail = p1[0];
+                else if (p2.length > 0) bestEmail = p2[0];
+                else if (p3.length > 0) bestEmail = p3[0];
+                else if (p4.length > 0) bestEmail = p4[0];
+                else if (p5.length > 0) bestEmail = p5[0];
+                else                    bestEmail = jobEmails[0];
             }
 
             let salesqlEmail = '';
@@ -750,7 +755,11 @@ function parseSalesQLResponse(body, store) {
                     if (atMatch) {
                         salesqlEmailDomain = atMatch[1].toLowerCase();
                         if (!addr.startsWith('...') && addr.includes('@')) {
+                            // Full unmasked email — store complete address
                             salesqlEmail = addr;
+                        } else {
+                            // Masked address (e.g. ...@neosurf.com) — store domain only
+                            salesqlEmail = salesqlEmailDomain;
                         }
                     }
                 }
@@ -815,8 +824,13 @@ function _handleBody(result, source, captureStore) {
         const json = JSON.parse(raw);
 
         if (source === 'salesql') {
-            console.log('📡 [CDP flat] SalesQL body captured from service worker');
-            parseSalesQLResponse(json, captureStore);
+            // SalesQL fires twice per page — skip second response if first already populated data
+            if (captureStore.getCurrent().salesql.length >= 10) {
+                console.log('📡 [CDP flat] SalesQL duplicate response — already captured, skipping');
+            } else {
+                console.log('📡 [CDP flat] SalesQL body captured from service worker');
+                parseSalesQLResponse(json, captureStore);
+            }
         } else if (source === 'lusha') {
             console.log('📡 [CDP flat] Lusha body captured from service worker');
             parseLushaResponse(json, captureStore);

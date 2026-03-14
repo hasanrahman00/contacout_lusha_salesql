@@ -12,51 +12,59 @@
 
 // ── Check if Lusha sidebar is already open with contacts rendered ────────────
 async function isLushaOpen(page) {
+    // Returns true ONLY if the Lusha sidebar is visible AND has contact cards rendered.
+    // After minimizeLusha(), the iframe stays in the DOM but contacts are hidden/cleared.
+    // Checking only iframe size is not enough — minimized sidebar can still have rect.height > 0.
+    // We require BOTH: visible iframe + at least one contact card in the frame DOM.
     try {
-        // Guard: if a navigation is already in progress, evaluate calls will throw
-        // "Execution context was destroyed". Return false so activation re-clicks the badge.
         const frames = page.frames();
         for (const frame of frames) {
             try {
                 const url  = frame.url();
                 const name = frame.name();
                 if (
-                    url.includes('LU__extension_iframe') ||
-                    name === 'LU__extension_iframe' ||
-                    url.includes('lusha.com')
-                ) {
-                    // Frame is attached — check it has content (not zero-size)
-                    const iframeEl = await page.$('iframe#LU__extension_iframe')
-                        || await page.$('iframe[name="LU__extension_iframe"]');
+                    !url.includes('LU__extension_iframe') &&
+                    name !== 'LU__extension_iframe' &&
+                    !url.includes('lusha.com')
+                ) continue;
 
-                    if (iframeEl) {
-                        const isVisible = await page.evaluate((el) => {
-                            const rect = el.getBoundingClientRect();
-                            const s = window.getComputedStyle(el);
-                            return (
-                                s.display !== 'none' &&
-                                s.visibility !== 'hidden' &&
-                                rect.width > 50 &&
-                                rect.height > 100
-                            );
-                        }, iframeEl).catch(() => false);
-                        if (isVisible) return true;
-                    }
+                // Condition 1: iframe element must be visible (not minimized/hidden)
+                const iframeEl = await page.$('iframe#LU__extension_iframe')
+                    || await page.$('iframe[name="LU__extension_iframe"]');
 
-                    // Fallback: frame has contacts in DOM
-                    const hasContacts = await frame.evaluate(() => {
-                        return document.querySelectorAll('[data-test-id^="contact-"]').length > 0
-                            || document.querySelectorAll('.bulk-contact-profile-container').length > 0
-                            || document.querySelectorAll('.bulk-contact-full-name').length > 0;
-                    }).catch(() => false);
+                if (!iframeEl) continue;
 
-                    if (hasContacts) return true;
-                }
+                const isVisible = await page.evaluate((el) => {
+                    const rect = el.getBoundingClientRect();
+                    const s = window.getComputedStyle(el);
+                    return (
+                        s.display !== 'none' &&
+                        s.visibility !== 'hidden' &&
+                        s.opacity !== '0' &&
+                        rect.width > 100 &&
+                        rect.height > 200   // minimized sidebar collapses to ~0–50px
+                    );
+                }, iframeEl).catch(() => false);
+
+                if (!isVisible) continue;
+
+                // Condition 2: actual contact cards must be rendered inside the frame
+                const hasContacts = await frame.evaluate(() => {
+                    return document.querySelectorAll('[data-test-id^="contact-"]').length > 0
+                        || document.querySelectorAll('.bulk-contact-profile-container').length > 0
+                        || document.querySelectorAll('.bulk-contact-full-name').length > 0
+                        || document.querySelectorAll('.lu-contact-card').length > 0;
+                }).catch(() => false);
+
+                if (hasContacts) return true;
+                // Frame exists + visible but no contacts yet — treat as closed (badge click needed)
+
             } catch {}
         }
     } catch (err) {
-        // Swallow "Execution context was destroyed" — page is navigating
-        if (err.message && err.message.includes('context')) return false;
+        if (err.message && (err.message.includes('context') || err.message.includes('navigation'))) {
+            return false;
+        }
     }
     return false;
 }

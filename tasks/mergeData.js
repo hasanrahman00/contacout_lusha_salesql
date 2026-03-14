@@ -87,9 +87,27 @@ function mergePageData(pageData) {
         // ── Step 3: Match SalesQL → email, phone, LinkedIn, org data ───────────
         const sqlMatch = matchSalesQLRecord(record, salesql, salesqlMatched);
 
-        // Email domain (Website_one): SalesQL fills only if Lusha+ContactOut both empty
-        if (!record.emailDomain && sqlMatch.salesqlEmailDomain) {
-            record.emailDomain = sqlMatch.salesqlEmailDomain;
+        // Email domain (Website_one):
+        // SalesQL email domain fills Website_one only if current value is empty
+        // OR if the SalesQL domain is different (better/more specific)
+        if (sqlMatch.salesqlEmailDomain) {
+            const existingDomain = (record.emailDomain || '').toLowerCase().trim();
+            const sqlDomain      = sqlMatch.salesqlEmailDomain.toLowerCase().trim();
+            if (!existingDomain) {
+                // Nothing yet — fill it
+                record.emailDomain = sqlDomain;
+            } else if (existingDomain !== sqlDomain) {
+                // Different domain — only replace if current came from a converted/fallback source
+                // (Lusha/ContactOut domains are trusted; SalesQL domain won't overwrite them)
+                // We don't overwrite here — SalesQL email domain is tertiary for Website_one
+            }
+        }
+
+        // SalesQL Org Website: only write to Website_one if it's empty AND different from email domain
+        if (sqlMatch.orgWebsite && !record.emailDomain) {
+            // Extract just the domain part from the org website URL for comparison
+            const orgDomain = (sqlMatch.orgWebsite || '').replace(/^https?:\/\//,'').replace(/\/.*$/,'').toLowerCase();
+            if (orgDomain) record.emailDomain = orgDomain;
         }
 
         // Full email address (may be masked "...@domain.com" → stored as domain only)
