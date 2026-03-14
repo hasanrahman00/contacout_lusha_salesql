@@ -48,6 +48,7 @@ const { extractSalesQLData, isSalesQLOpen }         = require('./tasks/extractSa
 const { setupNetworkCapture }                     = require('./tasks/setupNetworkCapture');
 const { mergePageData }                           = require('./tasks/mergeData');
 const { generateCSV }                             = require('./tasks/generateCSV');
+const { enrichPageAsync, waitForAllEnrichments }  = require('./tasks/deepseekEnrich');
 const { PageTracker }                             = require('./tasks/pageTracker');
 
 
@@ -77,6 +78,14 @@ const { PageTracker }                             = require('./tasks/pageTracker
         if (!fs.existsSync(LEADS_JSONL)) fs.writeFileSync(LEADS_JSONL, '', { flag: 'wx' });
 
         const captureStore = await setupNetworkCapture(context, browser);
+
+        // ── DeepSeek API key (from settings.json → DEEPSEEK_API_KEY) ─────────
+        const DEEPSEEK_KEY = config.DEEPSEEK_API_KEY || '';
+        if (DEEPSEEK_KEY) {
+            console.log('🤖 [DeepSeek] Domain enrichment enabled');
+        } else {
+            console.log('⚠️ [DeepSeek] No API key in settings — domain enrichment disabled');
+        }
 
         let navUrl = JOB_URL;
         if (START_PAGE > 1) {
@@ -291,6 +300,17 @@ const { PageTracker }                             = require('./tasks/pageTracker
 
             const totalLeads = await generateCSV(LEADS_JSONL, LEADS_CSV);
 
+            // ── DeepSeek domain enrichment — fire and forget (runs in background) ──
+            // Does NOT block the scraper. Validates Website/Website_one/Website_two
+            // against Company Name and rewrites the best match into the Website column.
+            enrichPageAsync(merged, {
+                apiKey:       DEEPSEEK_KEY,
+                leadsJsonl:   LEADS_JSONL,
+                leadsCSV:     LEADS_CSV,
+                generateCSVFn: generateCSV,
+                pageNum,
+            });
+
             const elapsed = ((Date.now() - pageStart) / 1000).toFixed(1);
             console.log(`✅ Page ${pageNum} done — ${totalLeads} total — ${elapsed}s`);
 
@@ -337,6 +357,8 @@ const { PageTracker }                             = require('./tasks/pageTracker
             } catch { console.log('⚠️ New page content slow'); }
         }
 
+        // Wait for all background DeepSeek enrichments to finish before final CSV
+        await waitForAllEnrichments();
         await generateCSV(LEADS_JSONL, LEADS_CSV);
 
         if (stopRequested) {

@@ -4,8 +4,27 @@
 
 process.env.PW_CHROMIUM_ATTACH_TO_OTHER = '1';
 
-const fs = require('fs');
+const fs   = require('fs');
 const path = require('path');
+
+// ── Load .env file (no dotenv package needed — pure Node fs) ─────────────────
+// .env lives in the project root alongside config.js
+// Format: KEY=value  (# comments supported, blank lines ignored)
+const ENV_FILE = path.join(__dirname, '.env');
+if (fs.existsSync(ENV_FILE)) {
+    const envLines = fs.readFileSync(ENV_FILE, 'utf-8').split('\n');
+    for (const raw of envLines) {
+        const line = raw.trim();
+        if (!line || line.startsWith('#')) continue;
+        const eq = line.indexOf('=');
+        if (eq < 0) continue;
+        const key = line.slice(0, eq).trim();
+        const val = line.slice(eq + 1).trim().replace(/^["']|["']$/g, '');
+        if (key && !(key in process.env)) {
+            process.env[key] = val;
+        }
+    }
+}
 
 const SETTINGS_FILE = path.join(__dirname, 'data', 'settings.json');
 
@@ -27,8 +46,9 @@ const PORT = userSettings.PORT || DEFAULTS.PORT;
 module.exports = {
     PORT,
     CDP_URL: `http://127.0.0.1:${PORT}`,
-    CHROME_PATH: userSettings.CHROME_PATH || DEFAULTS.CHROME_PATH,
-    USER_DATA_DIR: userSettings.USER_DATA_DIR || DEFAULTS.USER_DATA_DIR,
+    CHROME_PATH:       userSettings.CHROME_PATH       || DEFAULTS.CHROME_PATH,
+    USER_DATA_DIR:     userSettings.USER_DATA_DIR      || DEFAULTS.USER_DATA_DIR,
+    DEEPSEEK_API_KEY:  process.env.DEEPSEEK_API_KEY || userSettings.DEEPSEEK_API_KEY || '',
 
     MAX_PAGES: 100,
 
