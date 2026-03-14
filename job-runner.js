@@ -373,6 +373,10 @@ const { PageTracker }                             = require('./tasks/pageTracker
         } catch {}
 
         tracker.summary();
+
+        // Write sentinel file so website-enricher knows the job is complete
+        try { fs.writeFileSync(path.join(JOB_DIR, 'job.done'), new Date().toISOString()); } catch {}
+
         process.exit(0);
 
     } catch (error) {

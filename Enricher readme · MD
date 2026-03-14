@@ -1,0 +1,66 @@
+# Website Enricher
+
+Runs **in parallel** with the main VikiLeads scraper. Polls `leads.jsonl` every
+3 seconds for rows where `Website` is empty, enriches them via Gemini + DeepSeek,
+and writes the confirmed domain back into the file.
+
+## Setup
+
+### 1. Start the dedicated Chrome instance (once, before anything)
+
+```bat
+"C:\Program Files\Google\Chrome\Application\chrome.exe" ^
+  --remote-debugging-port=9224 ^
+  --user-data-dir="C:\website_enricher"
+```
+
+Sign into your Google account so Gemini is accessible.
+
+### 2. Add DeepSeek key to `.env` (project root)
+
+```
+DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx
+```
+
+### 3. Start the main scraper job as normal
+
+```bat
+node server.js
+```
+
+### 4. In a second terminal, start the enricher pointing at the same job folder
+
+```bat
+node website-enricher/enricher.js --dir "C:\Users\Hassan\Downloads\vikileads_updated\data\<jobid>"
+```
+
+The enricher auto-stops when it detects `job.done` (written by job-runner at completion)
+and all remaining empty rows have been processed. Use `--watch` to keep it running
+indefinitely.
+
+## Flow
+
+```
+Every 3s:
+  Read leads.jsonl
+  ↓
+  Find rows where Website is empty
+  ↓
+  Batch 5 at a time → Gemini (port 9224)
+    "What is the official website domain of 'CompanyName'?"
+  ↓
+  Confirmed candidates → DeepSeek purifier
+    "Does domain.com belong to CompanyName?"
+  ↓
+  Write confirmed domains back to leads.jsonl
+  ↓
+  Regenerate leads.csv + leads.xlsx
+```
+
+## Files
+
+| File | Purpose |
+|---|---|
+| `enricher.js` | Main watcher + orchestrator |
+| `geminiScraper.js` | Playwright CDP connection to Gemini tab |
+| `deepseekPurifier.js` | DeepSeek domain validation |
