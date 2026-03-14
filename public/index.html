@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VikiLeads v3.0.0 — Lead Extraction Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,400;0,500;0,600;0,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#080c18;--bg2:#0f1629;--bg3:#151d33;--bg4:#1a2440;
+  --border:#1e2d4a;--border2:#2a3d5e;
+  --text:#e8ecf4;--text2:#94a3c4;--text3:#5a6b8a;
+  --blue:#3b82f6;--blue2:#2563eb;--blueglow:rgba(59,130,246,.12);
+  --purple:#8b5cf6;--purpleglow:rgba(139,92,246,.12);
+  --green:#10b981;--greenglow:rgba(16,185,129,.12);
+  --teal:#14b8a6;
+  --amber:#f59e0b;--amberglow:rgba(245,158,11,.12);
+  --red:#ef4444;--redglow:rgba(239,68,68,.12);
+  --orange:#f97316;--orangeglow:rgba(249,115,22,.12);
+  --radius:10px;--font:'DM Sans',system-ui,sans-serif;--mono:'JetBrains Mono',monospace;
+}
+html,body{height:100%;font-family:var(--font);background:var(--bg);color:var(--text);overflow:hidden}
+body{display:flex}
+::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
+input,button,textarea{font-family:var(--font)}
+
+/* ── SIDEBAR ── */
+.sb{width:250px;min-width:250px;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column}
+.sb-brand{padding:26px 22px 18px;border-bottom:1px solid var(--border)}
+.sb-brand h1{font-size:21px;font-weight:700;background:linear-gradient(135deg,#3b82f6,#8b5cf6,#14b8a6);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.sb-brand p{font-size:10px;color:var(--text3);margin-top:3px;text-transform:uppercase;letter-spacing:2px;font-weight:600}
+.sb-nav{flex:1;padding:14px 10px;display:flex;flex-direction:column;gap:3px}
+.nv{display:flex;align-items:center;gap:11px;padding:11px 14px;border-radius:8px;font-size:13.5px;font-weight:500;color:var(--text2);cursor:pointer;transition:.15s;border:1px solid transparent}
+.nv:hover{background:var(--bg3);color:var(--text)}
+.nv.on{background:var(--blueglow);color:var(--blue);border-color:rgba(59,130,246,.15);font-weight:600}
+.nv svg{width:17px;height:17px;flex-shrink:0}
+
+/* ── MAIN ── */
+.mn{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.top{display:flex;align-items:center;justify-content:space-between;padding:18px 30px;border-bottom:1px solid var(--border);background:rgba(15,22,41,.7);backdrop-filter:blur(10px)}
+.top h2{font-size:19px;font-weight:600}
+.cnt{flex:1;overflow-y:auto;padding:26px 30px}
+
+/* ── BUTTONS ── */
+.btn{display:inline-flex;align-items:center;gap:7px;padding:9px 18px;border:1px solid transparent;border-radius:8px;font-size:12.5px;font-weight:600;cursor:pointer;transition:.15s;white-space:nowrap}
+.btn svg{width:15px;height:15px}
+.btn-p{background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff;box-shadow:0 2px 14px rgba(59,130,246,.25)}
+.btn-p:hover{box-shadow:0 4px 22px rgba(59,130,246,.45);transform:translateY(-1px)}
+.btn-g{background:transparent;color:var(--text2);border-color:var(--border)}
+.btn-g:hover{background:var(--bg3);color:var(--text)}
+.btn-s{background:var(--green);color:#fff}.btn-s:hover{filter:brightness(1.1)}
+.btn-w{background:var(--amber);color:#000}.btn-w:hover{filter:brightness(1.1)}
+.btn-d{background:transparent;color:var(--red);border-color:rgba(239,68,68,.3)}.btn-d:hover{background:var(--red);color:#fff}
+.btn-e{background:linear-gradient(135deg,#f97316,#ea580c);color:#fff;box-shadow:0 2px 14px rgba(249,115,22,.25)}.btn-e:hover{box-shadow:0 4px 22px rgba(249,115,22,.45);transform:translateY(-1px)}
+.btn-ew{background:var(--amber);color:#000}.btn-ew:hover{filter:brightness(1.1)}
+.btn-sm{padding:5px 11px;font-size:11.5px;border-radius:6px}
+.btn:disabled{opacity:.35;pointer-events:none}
+
+/* ── STATS ── */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:22px}
+.st{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:18px 20px;position:relative;overflow:hidden}
+.st::after{content:'';position:absolute;top:0;right:0;width:60px;height:60px;border-radius:50%;filter:blur(30px);opacity:.15}
+.st.b::after{background:var(--blue)}.st.g::after{background:var(--green)}
+.st.pr::after{background:var(--purple)}.st.or::after{background:var(--orange)}
+.st .l{font-size:10.5px;text-transform:uppercase;letter-spacing:1.2px;color:var(--text3);font-weight:600;margin-bottom:7px}
+.st .v{font-size:26px;font-weight:700}
+.st.b .v{color:var(--blue)}.st.g .v{color:var(--green)}.st.pr .v{color:var(--purple)}.st.or .v{color:var(--orange)}
+
+/* ── JOB CARDS ── */
+.jg{display:flex;flex-direction:column;gap:10px}
+.jc{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:18px 22px;transition:.2s;animation:fadeUp .3s ease}
+.jc:hover{border-color:var(--border2);background:var(--bg3)}
+.jc-h{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.jc-t{font-size:14.5px;font-weight:600;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.jc-m{display:flex;gap:18px;font-size:11.5px;color:var(--text3);margin-bottom:12px;font-weight:500;flex-wrap:wrap}
+.jc-m span{display:flex;align-items:center;gap:4px}
+
+/* Scrape progress bar */
+.jc-p{height:5px;background:var(--bg);border-radius:3px;overflow:hidden;margin-bottom:5px}
+.jc-pb{height:100%;border-radius:3px;transition:width .5s ease;background:linear-gradient(90deg,#3b82f6,#8b5cf6)}
+
+
+.jc-a{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+
+/* ── BADGES ── */
+.bd{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:20px;font-size:10.5px;font-weight:600;letter-spacing:.3px;text-transform:uppercase}
+.bd::before{content:'';width:5px;height:5px;border-radius:50%;background:currentColor}
+.bd-idle{background:var(--bg);color:var(--text3)}
+.bd-running{background:var(--blueglow);color:#60a5fa}.bd-running::before{animation:blink 1.2s infinite}
+.bd-done{background:var(--greenglow);color:#34d399}
+.bd-failed{background:var(--redglow);color:#f87171}
+.bd-stopped{background:var(--amberglow);color:#fbbf24}
+.bd-stopping{background:var(--purpleglow);color:#c084fc}.bd-stopping::before{animation:blink 1.2s infinite}
+.bd-enr-run{background:var(--orangeglow);color:#fb923c}.bd-enr-run::before{animation:blink 1.2s infinite;background:#fb923c}
+.bd-enr-done{background:var(--greenglow);color:#34d399}
+.bd-enr-fail{background:var(--redglow);color:#f87171}
+
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+/* ── MODAL ── */
+.ov{position:fixed;inset:0;background:rgba(0,0,0,.65);backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;z-index:100;opacity:0;pointer-events:none;transition:.2s}
+.ov.on{opacity:1;pointer-events:all}
+.md{background:var(--bg2);border:1px solid var(--border);border-radius:14px;width:540px;max-height:85vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,.5);transform:scale(.96);transition:transform .2s}
+.ov.on .md{transform:scale(1)}
+.md-h{padding:22px 26px 0;display:flex;align-items:center;justify-content:space-between}
+.md-h h3{font-size:17px;font-weight:600}
+.md-x{background:none;border:none;color:var(--text3);cursor:pointer;font-size:20px;padding:4px;border-radius:6px;transition:.15s}
+.md-x:hover{background:var(--bg3);color:var(--text)}
+.md-b{padding:18px 26px 26px}
+
+.tabs{display:flex;margin-bottom:18px;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.tab{flex:1;padding:9px;text-align:center;font-size:12.5px;font-weight:600;background:transparent;color:var(--text3);border:none;cursor:pointer;transition:.15s}
+.tab.on{background:var(--blue);color:#fff}
+.tab:not(.on):hover{background:var(--bg3)}
+
+.fg{margin-bottom:14px}
+.fg label{display:block;font-size:11px;font-weight:600;color:var(--text3);margin-bottom:5px;text-transform:uppercase;letter-spacing:.5px}
+input[type=text],textarea{width:100%;padding:10px 13px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13.5px;transition:.15s}
+input:focus,textarea:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 3px var(--blueglow)}
+textarea{resize:vertical;min-height:70px;font-family:var(--mono);font-size:12px}
+
+.uz{border:2px dashed var(--border);border-radius:var(--radius);padding:30px;text-align:center;cursor:pointer;transition:.2s;color:var(--text3);font-size:13px}
+.uz:hover,.uz.drag{border-color:var(--blue);background:var(--blueglow)}
+.uz input{display:none}
+.uz svg{margin-bottom:6px}
+.uz-f{color:var(--green);font-weight:600;margin-top:6px}
+
+/* ── LOG BOX ── */
+.log-box{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:14px;max-height:400px;overflow-y:auto;font-family:var(--mono);font-size:11.5px;line-height:1.65;color:var(--text2)}
+.log-box .err{color:var(--red)}.log-box .ok{color:var(--green)}
+.log-box .info{color:var(--blue)}.log-box .warn{color:var(--amber)}.log-box .enr{color:var(--orange)}
+
+/* ── EMPTY ── */
+.empty{text-align:center;padding:70px 20px;color:var(--text3)}
+.empty svg{width:56px;height:56px;margin-bottom:14px;opacity:.25}
+.empty h3{font-size:17px;color:var(--text2);margin-bottom:6px}
+.empty p{font-size:13px;margin-bottom:20px}
+
+/* ── SETTINGS ── */
+.sbox{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:22px;margin-bottom:18px}
+.sbox h3{font-size:15px;font-weight:600;margin-bottom:5px}
+.sbox p{color:var(--text3);font-size:12.5px;margin-bottom:14px;line-height:1.5}
+code{background:var(--bg);padding:2px 6px;border-radius:4px;font-family:var(--mono);font-size:11.5px;color:var(--blue)}
+
+/* ── BATCH SELECT ── */
+.bsel{padding:5px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text2);font-size:11.5px;font-weight:600;cursor:pointer;transition:.15s}
+.bsel:focus{outline:none;border-color:var(--orange)}
+.bsel option{background:var(--bg2)}
+
+/* ── TOAST ── */
+.toast{position:fixed;top:20px;right:20px;padding:12px 20px;border-radius:8px;font-size:13px;font-weight:600;z-index:200;transform:translateX(120%);transition:.3s;box-shadow:0 4px 20px rgba(0,0,0,.3)}
+.toast.show{transform:none}
+.toast.ok{background:var(--green);color:#fff}
+.toast.err{background:var(--red);color:#fff}
+.toast.info{background:var(--orange);color:#fff}
+</style>
+</head>
+<body>
+
+<!-- SIDEBAR -->
+<aside class="sb">
+  <div class="sb-brand">
+    <h1>VikiLeads</h1>
+    <p>Lead Extraction Suite</p>
+  </div>
+  <nav class="sb-nav">
+    <div class="nv on" data-p="dash" onclick="page('dash')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+      Dashboard
+    </div>
+    <div class="nv" data-p="set" onclick="page('set')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+      Settings
+    </div>
+  </nav>
+  <div style="padding:14px 16px;border-top:1px solid var(--border);font-size:11px;color:var(--text3)">v3.0.0 — Lusha + ContactOut</div>
+</aside>
+
+<!-- MAIN -->
+<main class="mn">
+  <div class="top">
+    <h2 id="pgT">Dashboard</h2>
+    <button class="btn btn-p" onclick="openNew()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      New Job
+    </button>
+  </div>
+
+  <div class="cnt">
+
+    <!-- DASHBOARD -->
+    <div id="pg-dash">
+      <div class="stats">
+        <div class="st b"><div class="l">Total Jobs</div><div class="v" id="s1">0</div></div>
+        <div class="st g"><div class="l">Total Leads</div><div class="v" id="s2">0</div></div>
+        <div class="st pr"><div class="l">Running</div><div class="v" id="s3">0</div></div>
+
+      </div>
+      <div class="jg" id="jg"></div>
+    </div>
+
+    <!-- SETTINGS -->
+    <div id="pg-set" style="display:none">
+      <div class="sbox">
+        <h3>⚙️ Chrome Configuration</h3>
+        <p>Configure your Chrome browser path and debug port. Chrome must be launched with remote debugging enabled before starting any jobs.</p>
+        <div class="fg"><label>Chrome Executable Path</label><input type="text" id="chrPath" placeholder="C:\Program Files\Google\Chrome\Application\chrome.exe"></div>
+        <div class="fg"><label>User Data Directory</label><input type="text" id="chrUdd" placeholder="C:\Chrome_Scraper"></div>
+        <div class="fg"><label>Debug Port</label><input type="text" id="chrPort" placeholder="9222" style="max-width:120px"></div>
+        <button class="btn btn-p" onclick="saveSettings()">Save Settings</button>
+      </div>
+      <div class="sbox">
+        <h3>🚀 Launch Command</h3>
+        <p>Use this command to launch Chrome with debugging enabled:</p>
+        <code id="cdpPreview" style="display:block;padding:10px;word-break:break-all;white-space:pre-wrap;line-height:1.6"></code>
+      </div>
+    </div>
+
+  </div>
+</main>
+
+<!-- NEW JOB MODAL -->
+<div class="ov" id="mo">
+  <div class="md">
+    <div class="md-h"><h3>Create New Job</h3><button class="md-x" onclick="closeMo()">&times;</button></div>
+    <div class="md-b">
+      <div class="tabs">
+        <button class="tab on" onclick="stab('url')">🔗 URL Input</button>
+        <button class="tab" onclick="stab('csv')">📄 CSV Upload</button>
+      </div>
+      <div id="t-url">
+        <div class="fg"><label>List Name</label><input type="text" id="jn" placeholder="e.g. Landscaping Leads — US"></div>
+        <div class="fg"><label>LinkedIn Sales Nav URL</label><textarea id="ju" rows="3" placeholder="https://www.linkedin.com/sales/search/people?query=..."></textarea></div>
+      </div>
+      <div id="t-csv" style="display:none">
+        <div class="fg"><label>List Name</label><input type="text" id="un" placeholder="e.g. Batch Import Q1"></div>
+        <div class="fg"><label>CSV File (url_number, url)</label>
+          <div class="uz" id="dz">
+            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            <p>Drop CSV here or <span style="color:var(--blue)">browse</span></p>
+            <div class="uz-f" id="ufn"></div>
+            <input type="file" id="cfi" accept=".csv">
+          </div>
+        </div>
+      </div>
+      <button class="btn btn-p" style="width:100%;justify-content:center;margin-top:6px" onclick="makeJob()">Create Job</button>
+    </div>
+  </div>
+</div>
+
+<!-- SCRAPE LOG MODAL -->
+<div class="ov" id="logMo">
+  <div class="md" style="width:680px">
+    <div class="md-h"><h3 id="logTitle">Job Logs</h3><button class="md-x" onclick="closeLog()">&times;</button></div>
+    <div class="md-b"><div class="log-box" id="logBox"></div></div>
+  </div>
+</div>
+
+
+<!-- TOAST -->
+<div class="toast" id="toast"></div>
+
+<script>
+let J=[], ctab='url', ufile=null, logPoll=null;
+
+// ══ SSE ══════════════════════════════════════════════════════════════════════
+function sse(){
+  const e=new EventSource('/api/events');
+  e.addEventListener('init',  v=>{J=JSON.parse(v.data);render()});
+  e.addEventListener('job:update', v=>{
+    const d=JSON.parse(v.data);
+    const i=J.findIndex(j=>j.id===d.id);
+    if(i>=0)J[i]=d;else J.unshift(d);
+    render();
+  });
+  e.addEventListener('job:delete', v=>{const{id}=JSON.parse(v.data);J=J.filter(j=>j.id!==id);render()});
+  e.onerror=()=>setTimeout(sse,3000);
+}
+sse();
+
+// ══ RENDER ═══════════════════════════════════════════════════════════════════
+function render(){
+  document.getElementById('s1').textContent=J.length;
+  document.getElementById('s2').textContent=J.reduce((s,j)=>s+(j.totalLeads||0),0);
+  document.getElementById('s3').textContent=J.filter(j=>j.status==='running').length;
+
+  const g=document.getElementById('jg');
+  if(!J.length){
+    g.innerHTML=`<div class="empty">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="3"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="16" x2="12" y2="16"/></svg>
+      <h3>No jobs yet</h3><p>Create your first scraping job to get started</p>
+      <button class="btn btn-p" onclick="openNew()">Create Job</button></div>`;
+    return;
+  }
+
+  g.innerHTML=J.map(j=>{
+    const pct=j.progress||0;
+    const d=new Date(j.createdAt).toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+
+    const scrapeIdle  = j.status==='idle'||j.status==='stopped'||j.status==='done'||j.status==='failed';
+    const scrapeRun   = j.status==='running';
+    const scrapeBusy  = scrapeRun || j.status==='stopping';
+
+    const hasLeads    = j.totalLeads>0;
+    const hasData     = j.hasData || j.totalLeads>0;
+
+    // Button visibility logic
+    const canDelete     = !scrapeBusy;
+
+    return`<div class="jc">
+      <div class="jc-h">
+        <div class="jc-t">
+          ${esc(j.name)}
+          <span class="bd bd-${j.status}">${j.status}</span>
+        </div>
+      </div>
+      <div class="jc-m">
+        <span>📅 ${d}</span>
+        <span>👥 ${j.totalLeads||0} leads</span>
+        ${j.urls?.length ? `<span>📋 ${j.urls.length} URLs</span>` : ''}
+        ${j.currentPage  ? `<span>📄 Page ${j.currentPage}</span>` : ''}
+      </div>
+      <div class="jc-p"><div class="jc-pb" style="width:${pct}%"></div></div>
+      <div class="jc-a">
+        ${scrapeIdle  ? `<button class="btn btn-s btn-sm" onclick="act('start','${j.id}')">▶ Run</button>` : ''}
+        ${scrapeRun   ? `<button class="btn btn-w btn-sm" onclick="act('stop','${j.id}')">⏸ Stop</button>` : ''}
+        <button class="btn btn-g btn-sm" onclick="dl('${j.id}','csv')">⬇ CSV</button>
+        <button class="btn btn-g btn-sm" style="color:var(--green);border-color:rgba(16,185,129,.3)" onclick="dl('${j.id}','xlsx')">📗 XLSX</button>
+        <button class="btn btn-g btn-sm" onclick="openLog('${j.id}','${esc(j.name)}')">📋 Logs</button>
+        ${canDelete ? `<button class="btn btn-d btn-sm" onclick="del('${j.id}')">✕</button>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function esc(s){return(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+
+// ══ ACTIONS ══════════════════════════════════════════════════════════════════
+async function makeJob(){
+  if(ctab==='url'){
+    const name=document.getElementById('jn').value.trim();
+    const url =document.getElementById('ju').value.trim();
+    if(!url)return toast('Enter a LinkedIn URL','err');
+    const r=await fetch('/api/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name||'Untitled',url})});
+    const d=await r.json();if(d.error)return toast(d.error,'err');
+  }else{
+    if(!ufile)return toast('Select a CSV file','err');
+    const fd=new FormData();fd.append('csv',ufile);fd.append('name',document.getElementById('un').value.trim()||ufile.name);
+    const r=await fetch('/api/jobs',{method:'POST',body:fd});
+    const d=await r.json();if(d.error)return toast(d.error,'err');
+  }
+  closeMo();
+  document.getElementById('jn').value='';document.getElementById('ju').value='';
+  ufile=null;document.getElementById('ufn').textContent='';
+  toast('Job created!','ok');
+}
+
+async function act(a,id){await fetch(`/api/jobs/${id}/${a}`,{method:'POST'})}
+async function del(id){if(!confirm('Delete this job and all its data?'))return;await fetch(`/api/jobs/${id}`,{method:'DELETE'})}
+function dl(id,fmt='csv'){window.open(`/api/jobs/${id}/${fmt}`)}
+
+
+// ══ SETTINGS ═════════════════════════════════════════════════════════════════
+function updateCdpPreview(){
+  const p    = document.getElementById('chrPath').value.trim()  || document.getElementById('chrPath').placeholder;
+  const port = document.getElementById('chrPort').value.trim()  || '9222';
+  const udd  = document.getElementById('chrUdd').value.trim()   || document.getElementById('chrUdd').placeholder;
+  document.getElementById('cdpPreview').textContent =
+    `"${p}" --remote-debugging-port=${port} --user-data-dir="${udd}"`;
+}
+async function loadSettings(){
+  try{
+    const r=await fetch('/api/settings');const d=await r.json();
+    document.getElementById('chrPath').value=d.CHROME_PATH||'';
+    document.getElementById('chrUdd').value=d.USER_DATA_DIR||'';
+    document.getElementById('chrPort').value=d.PORT||9222;
+    updateCdpPreview();
+  }catch{}
+}
+async function saveSettings(){
+  const CHROME_PATH   =document.getElementById('chrPath').value.trim();
+  const USER_DATA_DIR =document.getElementById('chrUdd').value.trim();
+  const PORT          =document.getElementById('chrPort').value.trim()||'9222';
+  if(!CHROME_PATH)   return toast('Enter Chrome executable path','err');
+  if(!USER_DATA_DIR) return toast('Enter User Data Directory','err');
+  const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({CHROME_PATH,USER_DATA_DIR,PORT})});
+  const d=await r.json();
+  if(d.success){toast('Settings saved! Restart server to apply.','ok');updateCdpPreview()}
+  else toast(d.error||'Failed','err');
+}
+['chrPath','chrUdd','chrPort'].forEach(id=>document.getElementById(id).addEventListener('input',updateCdpPreview));
+loadSettings();
+
+// ══ SCRAPE LOGS ══════════════════════════════════════════════════════════════
+async function openLog(id,name){
+  document.getElementById('logTitle').textContent=`Logs — ${name}`;
+  document.getElementById('logMo').classList.add('on');
+  const box=document.getElementById('logBox');
+  const r=await fetch(`/api/jobs/${id}/logs`);const d=await r.json();
+  renderLines(box,d.logs||[]);box.scrollTop=box.scrollHeight;
+  if(logPoll)clearInterval(logPoll);
+  logPoll=setInterval(async()=>{
+    if(!document.getElementById('logMo').classList.contains('on')){clearInterval(logPoll);return}
+    try{const r2=await fetch(`/api/jobs/${id}/logs`);const d2=await r2.json();renderLines(box,d2.logs||[]);box.scrollTop=box.scrollHeight}catch{}
+  },2000);
+}
+function closeLog(){document.getElementById('logMo').classList.remove('on');if(logPoll)clearInterval(logPoll)}
+
+
+// ══ LOG LINE RENDERER ════════════════════════════════════════════════════════
+function renderLines(box,lines){
+  if(!lines.length){box.innerHTML=`<div style="color:var(--text3)">No logs yet.</div>`;return}
+  box.innerHTML=lines.map(l=>{
+    let cls='';
+    if(l.includes('[ERR]')||l.includes('ERROR'))cls='err';
+    else if(l.includes('✅')||l.includes('Generated'))cls='ok';
+    else if(l.includes('📄')||l.includes('🔥')||l.includes('═══'))cls='info';
+    else if(l.includes('⚠️'))cls='warn';
+    return`<div class="${cls}">${esc(l)}</div>`;
+  }).join('');
+}
+
+// ══ UI HELPERS ═══════════════════════════════════════════════════════════════
+function page(p){
+  document.querySelectorAll('.nv').forEach(n=>n.classList.toggle('on',n.dataset.p===p));
+  document.getElementById('pg-dash').style.display=p==='dash'?'':'none';
+  document.getElementById('pg-set').style.display=p==='set'?'':'none';
+  document.getElementById('pgT').textContent=p==='dash'?'Dashboard':'Settings';
+}
+function openNew(){document.getElementById('mo').classList.add('on')}
+function closeMo(){document.getElementById('mo').classList.remove('on')}
+function stab(t){
+  ctab=t;
+  document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x.textContent.toLowerCase().includes(t)));
+  document.getElementById('t-url').style.display=t==='url'?'':'none';
+  document.getElementById('t-csv').style.display=t==='csv'?'':'none';
+}
+document.getElementById('mo').onclick         =e=>{if(e.target.classList.contains('ov'))closeMo()};
+document.getElementById('logMo').onclick      =e=>{if(e.target.classList.contains('ov'))closeLog()};
+
+
+// Drag-drop CSV upload
+const dz=document.getElementById('dz'),cfi=document.getElementById('cfi');
+dz.onclick=()=>cfi.click();
+cfi.onchange=e=>{ufile=e.target.files[0];document.getElementById('ufn').textContent=ufile?.name||''};
+dz.ondragover=e=>{e.preventDefault();dz.classList.add('drag')};
+dz.ondragleave=()=>dz.classList.remove('drag');
+dz.ondrop=e=>{e.preventDefault();dz.classList.remove('drag');ufile=e.dataTransfer.files[0];document.getElementById('ufn').textContent=ufile?.name||''};
+
+// Toast helper
+function toast(msg,type){
+  const t=document.getElementById('toast');t.textContent=msg;t.className=`toast ${type} show`;
+  setTimeout(()=>t.classList.remove('show'),3500);
+}
+</script>
+</body>
+</html>

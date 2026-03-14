@@ -1,0 +1,13 @@
+{
+  "name": "vikileads-v2",
+  "version": "2.3.3",
+  "description": "LinkedIn Sales Navigator lead extraction with SignalHire + Lusha + ZoomInfo network enrichment",
+  "scripts": {
+    "start": "node server.js",
+    "dashboard": "node server.js"
+  },
+  "dependencies": {
+    "json2csv": "^6.0.0-alpha.2",
+    "playwright": "^1.50.0"
+  }
+}
