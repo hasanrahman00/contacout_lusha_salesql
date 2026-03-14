@@ -254,7 +254,13 @@ code{background:var(--bg);padding:2px 6px;border-radius:4px;font-family:var(--mo
 <!-- SCRAPE LOG MODAL -->
 <div class="ov" id="logMo">
   <div class="md" style="width:680px">
-    <div class="md-h"><h3 id="logTitle">Job Logs</h3><button class="md-x" onclick="closeLog()">&times;</button></div>
+    <div class="md-h">
+      <h3 id="logTitle">Job Logs</h3>
+      <div style="display:flex;align-items:center;gap:8px">
+        <button class="btn btn-g btn-sm" onclick="copyLogs()">Copy</button>
+        <button class="md-x" onclick="closeLog()">&times;</button>
+      </div>
+    </div>
     <div class="md-b"><div class="log-box" id="logBox"></div></div>
   </div>
 </div>
@@ -408,6 +414,30 @@ async function openLog(id,name){
   },2000);
 }
 function closeLog(){document.getElementById('logMo').classList.remove('on');if(logPoll)clearInterval(logPoll)}
+
+async function copyLogs(){
+  const text=(document.getElementById('logBox')?.innerText||'').trim();
+  if(!text||text==='No logs yet.')return toast('No logs to copy','err');
+
+  try{
+    if(navigator.clipboard?.writeText){
+      await navigator.clipboard.writeText(text);
+    }else{
+      const ta=document.createElement('textarea');
+      ta.value=text;
+      ta.style.position='fixed';
+      ta.style.opacity='0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    toast('Logs copied','ok');
+  }catch{
+    toast('Copy failed','err');
+  }
+}
 
 
 // ══ LOG LINE RENDERER ════════════════════════════════════════════════════════

@@ -5,10 +5,9 @@
 // KEY BEHAVIOUR (v3.2.0):
 //   - Checks if sidebar is ALREADY OPEN before clicking the button.
 //     If open → skip activation, data is already visible.
-//   - Does NOT minimize the sidebar. Stays open for the entire page so that
-//     extractSalesQL.js can read the DOM at any time.
-//   - Sidebar persists between pages — on the next page, if still open,
-//     we wait for the cards to refresh (new page data loads automatically).
+//   - Sidebar is minimized AFTER extraction is complete (before next page navigation).
+//   - minimizeSalesQL() clicks the remove icon (._283pfsIaDQtBtkrPBTC8) inside the iframe.
+//   - On re-activation next page: if sidebar still open, wait for cards to refresh.
 //
 // ACTIVATION SEQUENCE:
 //   1. Detect SalesQL button via [data-v-step="0"] inside [data-v-0bc741d9]
@@ -126,10 +125,76 @@ async function activateSalesQL(page) {
 // Called by job-runner during cleanup but is a no-op here.
 // ═══════════════════════════════════════════════════════════════════════════════
 async function minimizeSalesQL(page) {
-    // Intentionally does nothing — sidebar stays open between pages.
-    // SalesQL automatically refreshes its data when LinkedIn navigates.
-    console.log('🟠 [SalesQL] Sidebar kept open (no minimize)');
-    return true;
+    console.log('🟠 [SalesQL] Minimizing sidebar...');
+    try {
+        // TWO buttons share the same icon class _283pfsIaDQtBtkrPBTC8:
+        //   button[0]: open_in_new  (external link — wrong)
+        //   button[1]: remove       (minimize — correct)
+        // Must filter by i.textContent === "remove".
+        // Use Playwright .filter() with has-text to get the exact right button.
+
+        // Strategy 1: button containing an <i> with exact text "remove"
+        // Playwright :has-text matches trimmed textContent
+        try {
+            const removeBtn = page.locator('button.sql-button--medium-square').filter({
+                has: page.locator('i', { hasText: /^\s*remove\s*$/i })
+            });
+            if (await removeBtn.count() > 0) {
+                await removeBtn.first().click({ force: true, timeout: 3000 });
+                console.log('✅ [SalesQL] Sidebar minimized (filter-remove-text)');
+                return true;
+            }
+        } catch {}
+
+        // Strategy 2: evaluate to get bounding rect of the "remove" icon, then click by coords
+        const coords = await page.evaluate(() => {
+            const icons = Array.from(document.querySelectorAll('i._283pfsIaDQtBtkrPBTC8, i.material-icons'));
+            for (const icon of icons) {
+                if ((icon.textContent || '').trim().toLowerCase() === 'remove') {
+                    const btn = icon.closest('button') || icon.closest('[data-v-730c4c00]');
+                    if (btn) {
+                        const r = btn.getBoundingClientRect();
+                        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+                    }
+                }
+            }
+            return null;
+        }).catch(() => null);
+
+        if (coords) {
+            await page.mouse.click(coords.x, coords.y);
+            console.log('✅ [SalesQL] Sidebar minimized (coords-click)');
+            return true;
+        }
+
+        // Strategy 3: locator by text content on the <i> element itself
+        try {
+            const iRemove = page.locator('i._283pfsIaDQtBtkrPBTC8', { hasText: /^\s*remove\s*$/i });
+            if (await iRemove.count() > 0) {
+                await iRemove.first().click({ force: true, timeout: 3000 });
+                console.log('✅ [SalesQL] Sidebar minimized (i-hasText-remove)');
+                return true;
+            }
+        } catch {}
+
+        // Strategy 4: all square buttons — the minimize is LAST (open_in_new comes first)
+        try {
+            const allBtns = page.locator('button.sql-button--medium-square');
+            const total = await allBtns.count();
+            if (total >= 2) {
+                await allBtns.last().click({ force: true, timeout: 3000 });
+                console.log('✅ [SalesQL] Sidebar minimized (last-square-btn)');
+                return true;
+            }
+        } catch {}
+
+        console.log('⚠️ [SalesQL] Minimize button not found');
+        return false;
+
+    } catch (err) {
+        console.log(`⚠️ [SalesQL] Minimize error: ${err.message}`);
+        return false;
+    }
 }
 
 

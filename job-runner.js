@@ -246,12 +246,10 @@ const { PageTracker }                             = require('./tasks/pageTracker
             }
 
             // ══════════════════════════════════════════════════════════
-            // STEP 5: Minimize sidebars
+            // STEP 5: Minimize ContactOut (Lusha + SalesQL minimized before navigation)
             // ══════════════════════════════════════════════════════════
-            console.log('⚡ [Step 5] Minimizing sidebars...');
+            console.log('⚡ [Step 5] Minimizing ContactOut...');
             await minimizeContactOut(page);
-            await minimizeSalesQL(page);
-            await minimizeLusha(page);
 
             // ── Page tracker ───────────────────────────────────────────
             tracker.pageExtracted(pageNum, {
@@ -299,6 +297,18 @@ const { PageTracker }                             = require('./tasks/pageTracker
             tracker.pageSaved(pageNum, totalLeads);
 
             if (stopRequested) break;
+
+            // ══════════════════════════════════════════════════════════
+            // STEP 6: Minimize Lusha + SalesQL before navigation
+            // ══════════════════════════════════════════════════════════
+            console.log('⚡ [Step 6] Minimizing Lusha + SalesQL...');
+            await minimizeSalesQL(page);
+            await minimizeLusha(page);
+
+            // Human-like pause after minimizing and before navigating (2–3s random)
+            const navDelay = 2000 + Math.floor(Math.random() * 1000);
+            console.log(`⏱ Waiting ${(navDelay/1000).toFixed(1)}s before navigation...`);
+            await page.waitForTimeout(navDelay);
 
             const safeToNavigate = tracker.pageNavigating(pageNum);
             if (!safeToNavigate) {

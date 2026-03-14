@@ -3,19 +3,18 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // v3.2.0 CHANGES:
-//   - Sidebar stays OPEN after data extraction (no minimize).
-//   - isLushaOpen() checks if the Lusha iframe is already visible with contacts.
-//     If open → skip badge click, data already captured via network interception.
-//   - minimizeLusha() is a no-op — kept for API compatibility but does nothing.
-//   - On retry: if network data hasn't arrived but sidebar IS open, we just wait
-//     longer rather than toggling the sidebar closed/open again.
+//   - Sidebar is minimized AFTER extraction is complete (before next page navigation).
+//   - minimizeLusha() clicks .minimize-icon-container img[alt="Minimize"] inside Lusha iframe.
+//   - isLushaOpen() checks sidebar visibility — if already open next page, skips badge click.
+//   - On retry: if network data hasn't arrived but sidebar IS open, wait longer.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 
 // ── Check if Lusha sidebar is already open with contacts rendered ────────────
 async function isLushaOpen(page) {
     try {
-        // Check iframe exists and is visible
+        // Guard: if a navigation is already in progress, evaluate calls will throw
+        // "Execution context was destroyed". Return false so activation re-clicks the badge.
         const frames = page.frames();
         for (const frame of frames) {
             try {
@@ -55,7 +54,10 @@ async function isLushaOpen(page) {
                 }
             } catch {}
         }
-    } catch {}
+    } catch (err) {
+        // Swallow "Execution context was destroyed" — page is navigating
+        if (err.message && err.message.includes('context')) return false;
+    }
     return false;
 }
 
@@ -121,20 +123,75 @@ async function activateLusha(page) {
         return true;
 
     } catch (error) {
-        console.log(`⚠️ [Lusha] Activation error: ${error.message}`);
+        // "Execution context was destroyed" = page navigated mid-activation — not a real error
+        if (error.message && error.message.includes('context')) {
+            console.log('⚠️ [Lusha] Activation interrupted by navigation — skipping');
+        } else {
+            console.log(`⚠️ [Lusha] Activation error: ${error.message}`);
+        }
         return false;
     }
 }
 
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// NO MINIMIZE — sidebar stays open intentionally
+// MINIMIZE — clicks .minimize-icon-container inside Lusha iframe
 // ═══════════════════════════════════════════════════════════════════════════════
 async function minimizeLusha(page) {
-    // Intentionally does nothing — sidebar stays open between pages.
-    // Network capture catches the API response passively.
-    console.log('🔵 [Lusha] Sidebar kept open (no minimize)');
-    return true;
+    console.log('🔵 [Lusha] Minimizing sidebar...');
+    try {
+        const frames = page.frames();
+
+        for (const frame of frames) {
+            try {
+                const url  = frame.url();
+                const name = frame.name();
+                if (!url.includes('lusha') && !url.includes('LU__extension') && name !== 'LU__extension_iframe') continue;
+
+                const clicked = await frame.evaluate(() => {
+                    // Primary: .minimize-icon-container img[alt="Minimize"]
+                    const minImg = document.querySelector('.minimize-icon-container img[alt="Minimize"]');
+                    if (minImg) {
+                        const target = minImg.closest('.minimize-icon-container') || minImg.closest('button') || minImg.closest('div') || minImg;
+                        target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                        return 'minimize-container';
+                    }
+                    // Fallback: .minimize-icon-container itself
+                    const minContainer = document.querySelector('.minimize-icon-container');
+                    if (minContainer) {
+                        minContainer.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                        return 'container-direct';
+                    }
+                    // Fallback: any img with alt "Minimize"
+                    const anyMin = document.querySelector('img[alt="Minimize"]');
+                    if (anyMin) {
+                        const target = anyMin.closest('button') || anyMin.closest('div') || anyMin;
+                        target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                        return 'img-alt';
+                    }
+                    // Fallback: SVG-based minimize button
+                    const svgBtn = document.querySelector('[data-test-id="minimize"], [data-testid="minimize"]');
+                    if (svgBtn) {
+                        svgBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                        return 'data-testid';
+                    }
+                    return null;
+                }).catch(() => null);
+
+                if (clicked) {
+                    console.log(`✅ [Lusha] Sidebar minimized (${clicked})`);
+                    return true;
+                }
+            } catch {}
+        }
+
+        console.log('⚠️ [Lusha] Minimize button not found');
+        return false;
+
+    } catch (err) {
+        console.log(`⚠️ [Lusha] Minimize error: ${err.message}`);
+        return false;
+    }
 }
 
 
