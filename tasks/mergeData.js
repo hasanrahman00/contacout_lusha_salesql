@@ -21,6 +21,18 @@
 
 const { cleanName } = require('./nameCleaner');
 
+// Strip protocol, www, and path — return bare domain: "https://www.company.com/path" → "company.com"
+function cleanDomain(str) {
+    return (str || '')
+        .trim()
+        .toLowerCase()
+        .replace(/^https?:\/\//i, '')
+        .replace(/^www\./i, '')
+        .split('/')[0]
+        .split('?')[0]
+        .trim();
+}
+
 /**
  * @param {Object} pageData
  *   lusha:             [{ firstName, lastName, fullName, domain, personLinkedinUrl }]
@@ -87,31 +99,44 @@ function mergePageData(pageData) {
         // ── Step 3: Match SalesQL → email, phone, LinkedIn, org data ───────────
         const sqlMatch = matchSalesQLRecord(record, salesql, salesqlMatched);
 
-        // Email domain (Website_one):
-        // SalesQL email domain fills Website_one only if current value is empty
-        // OR if the SalesQL domain is different (better/more specific)
-        if (sqlMatch.salesqlEmailDomain) {
-            const existingDomain = (record.emailDomain || '').toLowerCase().trim();
-            const sqlDomain      = sqlMatch.salesqlEmailDomain.toLowerCase().trim();
-            if (!existingDomain) {
-                // Nothing yet — fill it
-                record.emailDomain = sqlDomain;
-            } else if (existingDomain !== sqlDomain) {
-                // Different domain — only replace if current came from a converted/fallback source
-                // (Lusha/ContactOut domains are trusted; SalesQL domain won't overwrite them)
-                // We don't overwrite here — SalesQL email domain is tertiary for Website_one
-            }
+        // Pre-compute clean versions of all domains for dedup comparison
+        const existingWebsiteOne = cleanDomain(record.emailDomain);
+        const sqlEmailDomain     = cleanDomain(sqlMatch.salesqlEmailDomain || sqlMatch.salesqlEmail);
+        const orgWebsiteDomain   = cleanDomain(sqlMatch.orgWebsite);
+
+        // ── Website_one domain logic ──────────────────────────────────────────
+        // Priority: Lusha > ContactOut > SalesQL email domain > SalesQL org website
+        // SalesQL email domain fills Website_one only if currently empty
+        if (!existingWebsiteOne && sqlEmailDomain) {
+            record.emailDomain = sqlEmailDomain;
+        }
+        // SalesQL org website domain fills Website_one only if still empty
+        if (!cleanDomain(record.emailDomain) && orgWebsiteDomain) {
+            record.emailDomain = orgWebsiteDomain;
         }
 
-        // SalesQL Org Website: only write to Website_one if it's empty AND different from email domain
-        if (sqlMatch.orgWebsite && !record.emailDomain) {
-            // Extract just the domain part from the org website URL for comparison
-            const orgDomain = (sqlMatch.orgWebsite || '').replace(/^https?:\/\//,'').replace(/\/.*$/,'').toLowerCase();
-            if (orgDomain) record.emailDomain = orgDomain;
+        // ── SalesQL Email column — dedup rule ─────────────────────────────────
+        // Don't fill SalesQL Email if its domain is already present in:
+        //   - Website_one (emailDomain)     — would be a duplicate
+        //   - SalesQL Org Website domain    — same source, redundant
+        const finalWebsiteOne  = cleanDomain(record.emailDomain);
+        const sqlEmailVal      = sqlMatch.salesqlEmail || '';
+        const sqlEmailValClean = cleanDomain(sqlEmailVal);
+
+        if (sqlEmailVal && sqlEmailValClean
+            && sqlEmailValClean !== finalWebsiteOne
+            && sqlEmailValClean !== orgWebsiteDomain) {
+            // Domain is genuinely new info — show it
+            record.salesqlEmail = sqlEmailVal;
+        } else {
+            // Domain already covered by Website_one or SalesQL Org Website — omit
+            record.salesqlEmail = '';
         }
 
-        // Full email address (may be masked "...@domain.com" → stored as domain only)
-        record.salesqlEmail = sqlMatch.salesqlEmail || '';
+        // ── Website_one vs SalesQL Org Website dedup ─────────────────────────
+        // If Website_one's clean domain equals the org website domain, they are the same.
+        // Keep Website_one as the authoritative domain field (it's already correct).
+        // No further action needed — SalesQL Org Website column still shows the full URL.
 
         // Phone
         record.salesqlPhone = sqlMatch.salesqlPhone || '';
