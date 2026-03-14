@@ -1,39 +1,15 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// 🌐 Gemini Website Scraper — website-enricher/geminiScraper.js
-// ═══════════════════════════════════════════════════════════════════════════════
-//
-// Connects to a dedicated Chrome instance (port 9224, user-data-dir C:\website_enricher)
-// and uses Gemini to find the official website for a company name.
-//
-// USAGE:
-//   const { GeminiScraper } = require('./geminiScraper');
-//   const g = new GeminiScraper(cdpUrl);
-//   await g.connect();
-//   const domain = await g.findWebsite('Tonal');
-//   await g.close();
-//
-// FLOW per query:
-//   1. Navigate to Gemini (reuse existing tab)
-//   2. Clear the input and type: "What is the official website domain of [Company]? Reply with only the domain like company.com"
-//   3. Submit and wait for response to stop streaming
-//   4. Extract the first domain pattern from the response text
-//   5. Return bare domain (stripped of http/www/path)
+// 🌐 Gemini Website Scraper — website-enricher/geminiScraper.js  v1.1.0
 // ═══════════════════════════════════════════════════════════════════════════════
 
 'use strict';
 
 const { chromium } = require('playwright');
 
-const GEMINI_URL   = 'https://gemini.google.com/app';
-const CONNECT_TIMEOUT = 15000;
-const RESPONSE_TIMEOUT = 30000;
-const STREAM_SETTLE_MS = 2500;   // wait after stream stops to confirm it's done
-
-// DOM selectors for Gemini chat interface
-const INPUT_SEL    = 'rich-textarea[data-placeholder] p, .ql-editor p, [contenteditable="true"] p';
-const SUBMIT_SEL   = 'button[aria-label*="Send"], button.send-button, mat-icon[data-mat-icon-name="send"]';
-const RESPONSE_SEL = '.response-container-content, model-response .markdown, .response-text';
-const LOADING_SEL  = '.loading-indicator, [aria-label*="Gemini is thinking"], .thinking-indicator';
+const GEMINI_URL       = 'https://gemini.google.com/app';
+const CONNECT_TIMEOUT  = 15000;
+const RESPONSE_TIMEOUT = 45000;
+const SETTLE_MS        = 2000;
 
 class GeminiScraper {
     constructor(cdpUrl = 'http://127.0.0.1:9224') {
@@ -44,171 +20,201 @@ class GeminiScraper {
         this._ready  = false;
     }
 
-    // ── Connect to the dedicated Chrome instance ────────────────────────────
+    // ── Connect to Chrome on port 9224 ──────────────────────────────────────
     async connect() {
         try {
-            this.browser = await chromium.connectOverCDP(this.cdpUrl, { timeout: CONNECT_TIMEOUT });
+            this.browser  = await chromium.connectOverCDP(this.cdpUrl, { timeout: CONNECT_TIMEOUT });
             const contexts = this.browser.contexts();
             this.context  = contexts[0] || await this.browser.newContext();
 
-            // Find or create the Gemini tab
+            // Find existing Gemini tab or open one
             let geminiPage = null;
             for (const p of this.context.pages()) {
                 if (p.url().includes('gemini.google.com')) { geminiPage = p; break; }
             }
             if (!geminiPage) {
                 geminiPage = await this.context.newPage();
-                await geminiPage.goto(GEMINI_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
+                await geminiPage.goto(GEMINI_URL, { waitUntil: 'domcontentloaded', timeout: 25000 });
+                // Wait for Gemini to fully load
+                await geminiPage.waitForTimeout(3000);
             }
 
             this.page   = geminiPage;
             this._ready = true;
-            console.log('✅ [GeminiScraper] Connected to Chrome port 9224');
+            console.log('✅ [GeminiScraper] Connected (port 9224)');
             return true;
         } catch (err) {
             console.log(`⚠️ [GeminiScraper] Connect failed: ${err.message}`);
-            this._ready = false;
             return false;
         }
     }
 
-    // ── Type into Gemini input and submit ───────────────────────────────────
+    // ── Clear input and type query ───────────────────────────────────────────
     async _sendQuery(text) {
         const page = this.page;
 
-        // Wait for input to be ready
-        await page.waitForSelector('rich-textarea, .ql-editor, [contenteditable="true"]', { timeout: 10000 });
+        // Gemini uses a rich-textarea with a div[contenteditable] inside
+        // Wait for the input area to be ready
+        await page.waitForFunction(() => {
+            const el = document.querySelector('rich-textarea div[contenteditable]')
+                    || document.querySelector('div[contenteditable="true"]');
+            return el && el.isConnected;
+        }, { timeout: 15000 });
 
-        // Click the input area
-        const inputEl = await page.$('rich-textarea .ql-editor, .ql-editor, [data-placeholder] [contenteditable]')
-            || await page.$('[contenteditable="true"]');
+        // Click the input to focus
+        const inputLocator = page.locator('rich-textarea div[contenteditable]').first()
+            .or(page.locator('div[contenteditable="true"]').first());
 
-        if (!inputEl) throw new Error('Gemini input not found');
-
-        await inputEl.click();
-        await page.waitForTimeout(300);
-
-        // Clear any existing text
-        await page.keyboard.press('Control+A');
-        await page.keyboard.press('Backspace');
+        await inputLocator.click();
         await page.waitForTimeout(200);
 
-        // Type the query
-        await page.keyboard.type(text, { delay: 20 });
-        await page.waitForTimeout(400);
+        // Select all + delete to clear
+        await page.keyboard.press('Control+a');
+        await page.keyboard.press('Backspace');
+        await page.waitForTimeout(150);
 
-        // Submit
-        const submitted = await page.evaluate(() => {
-            // Try clicking send button
-            const sendBtn = document.querySelector('button[aria-label*="Send"], .send-button button, button.send')
-                || Array.from(document.querySelectorAll('button')).find(b =>
-                    b.getAttribute('aria-label')?.toLowerCase().includes('send') ||
-                    b.querySelector('mat-icon[data-mat-icon-name="send"]')
-                );
-            if (sendBtn && !sendBtn.disabled) { sendBtn.click(); return true; }
+        // Type the query
+        await inputLocator.fill(text);
+        await page.waitForTimeout(300);
+
+        // Send: try button first, then Enter
+        const sent = await page.evaluate(() => {
+            // Look for send / submit button
+            const btns = Array.from(document.querySelectorAll('button'));
+            const sendBtn = btns.find(b => {
+                const label = (b.getAttribute('aria-label') || '').toLowerCase();
+                const title = (b.getAttribute('title') || '').toLowerCase();
+                return label.includes('send') || title.includes('send')
+                    || b.querySelector('mat-icon[data-mat-icon-name="send"]')
+                    || b.querySelector('svg[data-icon="send"]');
+            });
+            if (sendBtn && !sendBtn.disabled) {
+                sendBtn.click();
+                return true;
+            }
             return false;
         });
 
-        if (!submitted) {
-            // Fallback: Enter key
-            await page.keyboard.press('Enter');
-        }
+        if (!sent) await page.keyboard.press('Enter');
+        console.log(`   [Gemini] Query sent`);
     }
 
-    // ── Wait for Gemini to finish streaming a response ──────────────────────
+    // ── Wait for Gemini to finish generating ────────────────────────────────
     async _waitForResponse() {
-        const page = this.page;
+        const page  = this.page;
         const start = Date.now();
 
-        // Wait for loading indicator to appear then disappear
+        // Wait for a response container to appear
         try {
             await page.waitForSelector(
-                '.loading-indicator, [data-test-id="loading"], .thinking-indicator, mat-progress-bar',
-                { state: 'attached', timeout: 8000 }
+                'model-response, .response-container, .model-response, [data-response-index]',
+                { state: 'attached', timeout: 10000 }
             );
-        } catch { /* loading indicator may not appear for fast responses */ }
+        } catch { /* may already be present */ }
 
-        // Wait for it to go away
-        try {
-            await page.waitForSelector(
-                '.loading-indicator, [data-test-id="loading"], .thinking-indicator, mat-progress-bar',
-                { state: 'detached', timeout: RESPONSE_TIMEOUT }
-            );
-        } catch { /* timeout — proceed anyway */ }
-
-        // Extra settle time to ensure streaming has fully stopped
-        await page.waitForTimeout(STREAM_SETTLE_MS);
-
-        if (Date.now() - start > RESPONSE_TIMEOUT) {
-            throw new Error('Gemini response timeout');
+        // Poll until the "stop generating" button disappears (streaming done)
+        const deadline = start + RESPONSE_TIMEOUT;
+        while (Date.now() < deadline) {
+            await page.waitForTimeout(500);
+            const isGenerating = await page.evaluate(() => {
+                // Gemini shows a "stop" button while streaming
+                const stopBtn = document.querySelector(
+                    'button[aria-label*="Stop"], button[aria-label*="stop"], ' +
+                    '.stop-button, [data-test-id="stop-button"]'
+                );
+                return !!stopBtn;
+            });
+            if (!isGenerating) break;
         }
+
+        // Extra settle time
+        await page.waitForTimeout(SETTLE_MS);
     }
 
-    // ── Extract text of the most recent response ────────────────────────────
+    // ── Extract the last response text ──────────────────────────────────────
     async _extractResponse() {
-        const page = this.page;
-
-        const text = await page.evaluate(() => {
-            // Get all response containers and take the last one
-            const responses = document.querySelectorAll(
-                '.response-container-content, model-response .markdown, ' +
-                '.model-response-text, .response-text, message-content'
-            );
-            if (responses.length === 0) return '';
-            const last = responses[responses.length - 1];
-            return (last.textContent || last.innerText || '').trim();
+        return await this.page.evaluate(() => {
+            const candidates = [
+                ...document.querySelectorAll('model-response .markdown'),
+                ...document.querySelectorAll('model-response'),
+                ...document.querySelectorAll('.response-container-content'),
+                ...document.querySelectorAll('.model-response-text'),
+                ...document.querySelectorAll('message-content'),
+            ];
+            if (candidates.length === 0) return '';
+            const last = candidates[candidates.length - 1];
+            return (last.innerText || last.textContent || '').trim();
         });
-
-        return text;
     }
 
-    // ── Parse a domain out of Gemini's response text ────────────────────────
+    // ── Extract a bare domain from Gemini's text ────────────────────────────
     _parseDomain(text) {
         if (!text) return null;
 
-        // Look for explicit domain patterns: word.tld (optionally with www/https)
-        const patterns = [
-            /(?:https?:\/\/)?(?:www\.)?([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.(?:com|org|net|io|co|ai|app|tech|health|care|inc|biz|us|uk|ca|de|fr|au|info|edu|gov|co\.[a-z]{2}))\b/gi,
-        ];
+        // Match bare domains and URLs
+        const re = /(?:https?:\/\/)?(?:www\.)?([a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?\.(?:com|org|net|io|co|ai|app|tech|health|care|inc|biz|us|uk|ca|de|fr|au|info|edu|gov|co\.[a-z]{2}|[a-z]{2,4}))\b/gi;
+        const matches = [...text.matchAll(re)];
+        if (matches.length === 0) return null;
 
-        for (const re of patterns) {
-            const matches = [...text.matchAll(re)];
-            if (matches.length > 0) {
-                // Prefer the first match after "website", "domain", "is", "at"
-                for (const m of matches) {
-                    const before = text.slice(Math.max(0, m.index - 30), m.index).toLowerCase();
-                    if (/website|domain|is\s*:?|at\s*:?|url|official/.test(before)) {
-                        return this._stripDomain(m[1] || m[0]);
-                    }
-                }
-                return this._stripDomain(matches[0][1] || matches[0][0]);
+        // Prefer domains mentioned after "is", ":", "website", "domain", "at"
+        for (const m of matches) {
+            const before = text.slice(Math.max(0, m.index - 40), m.index).toLowerCase();
+            if (/website|domain|is\s*:?$|at\s*:?$|url|official|visit/.test(before)) {
+                return this._strip(m[1] || m[0]);
             }
         }
-
-        return null;
+        // Otherwise return first match
+        return this._strip(matches[0][1] || matches[0][0]);
     }
 
-    _stripDomain(str) {
-        return (str || '').trim().toLowerCase()
+    _strip(s) {
+        return (s || '').trim().toLowerCase()
             .replace(/^https?:\/\//i, '').replace(/^www\./i, '')
             .split('/')[0].split('?')[0].trim();
     }
 
-    // ── PUBLIC: find official website for a company name ───────────────────
-    async findWebsite(companyName) {
-        if (!this._ready || !this.page) throw new Error('Not connected');
+    // ── Save a debug screenshot ──────────────────────────────────────────────
+    async _screenshot(debugDir, name) {
+        if (!debugDir || !this.page) return;
+        try {
+            const fs   = require('fs');
+            const path = require('path');
+            fs.mkdirSync(debugDir, { recursive: true });
+            await this.page.screenshot({
+                path: path.join(debugDir, `${Date.now()}-${name}.png`),
+                fullPage: false,
+            });
+        } catch {}
+    }
 
-        const query = `What is the official website domain of "${companyName}"? Reply with only the bare domain like company.com — no explanation, no http, no www.`;
+    // ── PUBLIC: find official website domain for a company ──────────────────
+    async findWebsite(companyName, debugDir = null) {
+        if (!this._ready) throw new Error('Not connected');
 
+        const query = `What is the official website domain of the company "${companyName}"? Reply with only the bare domain like example.com — nothing else.`;
+
+        console.log(`   🌐 [Gemini] Asking about: "${companyName}"`);
         await this._sendQuery(query);
         await this._waitForResponse();
-        const responseText = await this._extractResponse();
-        const domain = this._parseDomain(responseText);
-
+        await this._screenshot(debugDir, `response-${companyName.replace(/[^a-z0-9]/gi,'_').slice(0,30)}`);
+        const text   = await this._extractResponse();
+        const domain = this._parseDomain(text);
+        console.log(`   🌐 [Gemini] Response: "${text.slice(0,80)}" → ${domain || 'not found'}`);
         return domain;
     }
 
-    // ── Clean disconnect ─────────────────────────────────────────────────────
+    // ── PUBLIC: self-test — ask about Google, expect google.com ─────────────
+    async selfTest(debugDir = null) {
+        try {
+            console.log('   🧪 [Gemini] Self-test: asking about "Google"...');
+            const domain = await this.findWebsite('Google', debugDir);
+            const ok = domain && (domain.includes('google.') || domain === 'google.com');
+            return { ok: !!ok, domain };
+        } catch (err) {
+            return { ok: false, error: err.message };
+        }
+    }
+
     async close() {
         try { if (this.browser) await this.browser.close(); } catch {}
         this._ready = false;
