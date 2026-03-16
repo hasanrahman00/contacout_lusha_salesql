@@ -171,6 +171,9 @@ async function run() {
 
     const jsonlPath = path.join(jobDir, 'leads.jsonl');
     const doneFile  = path.join(jobDir, 'job.done');
+
+    // Open a fresh Gemini chat for this job — all batch queries share it
+    await gemini.newChat();
     console.log(`📂 [Enricher] Found job: ${jobDir}`);
 
     const alreadyQueued = new Set();
@@ -186,6 +189,8 @@ async function run() {
         if (newerDir && newerDir !== jobDir) {
             console.log(`📂 [Enricher] Switched to newer job: ${newerDir}`);
             jobDir = newerDir;
+            // New job → new chat
+            await gemini.newChat();
         }
 
         const jobDone = fs.existsSync(path.join(jobDir, 'job.done'));

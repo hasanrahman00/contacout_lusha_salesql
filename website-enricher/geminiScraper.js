@@ -56,13 +56,27 @@ class GeminiScraper {
         ).catch(() => 0);
     }
 
+    // ── PUBLIC: open a fresh Gemini chat (call once per job) ─────────────────
+    // Navigates to https://gemini.google.com/app which always starts a new
+    // conversation. All subsequent _query() calls within this job share that
+    // chat. Call again when the next job starts.
+    async newChat() {
+        console.log('   🌐 [Gemini] Opening new chat...');
+        await this.page.goto('https://gemini.google.com/app', {
+            waitUntil: 'domcontentloaded',
+            timeout: 20000,
+        });
+        await this.page.waitForTimeout(1500);
+        console.log('   🌐 [Gemini] Fresh chat ready');
+    }
+
     // ── Send query + wait for NEW response + return its text ─────────────────
-    // Snapshots the response count BEFORE sending so we can detect exactly
-    // which element is the new reply — avoids reading previous conversation turns.
+    // All queries within one job share the same chat. Call newChat() once
+    // per job to get a fresh conversation, then fire all batch queries here.
     async _query(text) {
         const page = this.page;
 
-        // 1. Snapshot response count before we send
+        // 1. Snapshot response count before sending
         const countBefore = await this._countResponses();
 
         // 2. Wait for input area
