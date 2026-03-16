@@ -57,17 +57,57 @@ class GeminiScraper {
     }
 
     // ── PUBLIC: open a fresh Gemini chat (call once per job) ─────────────────
-    // Navigates to https://gemini.google.com/app which always starts a new
-    // conversation. All subsequent _query() calls within this job share that
-    // chat. Call again when the next job starts.
+    // Strategy 1: click the "New chat" button in the sidebar (keeps same page,
+    //             guaranteed fresh conversation, no redirect ambiguity).
+    // Strategy 2: navigate to /app with a cache-busting param as fallback.
     async newChat() {
         console.log('   🌐 [Gemini] Opening new chat...');
-        await this.page.goto('https://gemini.google.com/app', {
-            waitUntil: 'domcontentloaded',
-            timeout: 20000,
-        });
-        await this.page.waitForTimeout(1500);
-        console.log('   🌐 [Gemini] Fresh chat ready');
+        try {
+            // Try clicking the New chat / pencil / compose button in sidebar
+            const clicked = await this.page.evaluate(() => {
+                const selectors = [
+                    'button[aria-label*="New chat"]',
+                    'button[aria-label*="new chat"]',
+                    'button[aria-label*="New conversation"]',
+                    '[data-test-id="new-chat-button"]',
+                    'a[href*="/app"][aria-label*="New"]',
+                    'button.new-chat-button',
+                    // Gemini sidebar pencil/compose icon
+                    'mat-icon[data-mat-icon-name="edit_note"]',
+                    'mat-icon[data-mat-icon-name="add"]',
+                ];
+                for (const sel of selectors) {
+                    const el = document.querySelector(sel);
+                    if (el) {
+                        const btn = el.closest('button') || el.closest('a') || el;
+                        btn.click();
+                        return sel;
+                    }
+                }
+                return null;
+            });
+
+            if (clicked) {
+                console.log(`   🌐 [Gemini] Clicked new chat button (${clicked})`);
+                await this.page.waitForTimeout(1200);
+            } else {
+                // Fallback: navigate with a timestamp param to prevent redirect to old chat
+                const ts = Date.now();
+                await this.page.goto(`https://gemini.google.com/app?t=${ts}`, {
+                    waitUntil: 'domcontentloaded',
+                    timeout: 20000,
+                });
+                await this.page.waitForTimeout(1500);
+                console.log('   🌐 [Gemini] Navigated to fresh chat (fallback)');
+            }
+        } catch (err) {
+            // Last resort: hard navigate
+            await this.page.goto('https://gemini.google.com/app', {
+                waitUntil: 'domcontentloaded', timeout: 20000,
+            });
+            await this.page.waitForTimeout(1500);
+        }
+        console.log('   🌐 [Gemini] Fresh chat ready (responses: ' + await this._countResponses() + ')');
     }
 
     // ── Send query + wait for NEW response + return its text ─────────────────
@@ -286,11 +326,12 @@ class GeminiScraper {
         return results[0]?.geminiDomain || null;
     }
 
-    // ── PUBLIC: self-test — query Gemini directly, verify it responds ─────────
-    // Uses a raw _query call (not findWebsitesBatch) to avoid the number-format
-    // parser failing when Gemini omits the "1." prefix on single-item responses.
+    // ── PUBLIC: self-test — opens its OWN fresh chat, isolated from job chat ───
     async selfTest(debugDir = null) {
         try {
+            // Open a dedicated chat for the self-test so its response
+            // does NOT sit at position 0 when the job chat starts.
+            await this.newChat();
             console.log('   🧪 [Gemini] Self-test: asking about "Microsoft"...');
             const text = await this._query(
                 'What is the official website domain of Microsoft? Reply with ONLY the bare domain like microsoft.com — nothing else, no http, no www.'

@@ -107,6 +107,56 @@ function applyResults(records, results) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// AUTO-LAUNCH CHROME ON PORT 9224
+// ═══════════════════════════════════════════════════════════════════════════════
+async function ensureGeminiChrome(chromePath) {
+    const PORT = 9224;
+    const UDD  = 'C:\\website_enricher';
+    const http = require('http');
+
+    function checkRunning() {
+        return new Promise((resolve) => {
+            const req = http.get(`http://127.0.0.1:${PORT}/json/version`, { timeout: 2000 }, (res) => {
+                let d = '';
+                res.on('data', c => d += c);
+                res.on('end', () => {
+                    try { const p = JSON.parse(d); resolve(!!p.Browser); }
+                    catch { resolve(false); }
+                });
+            });
+            req.on('error', () => resolve(false));
+            req.on('timeout', () => { req.destroy(); resolve(false); });
+        });
+    }
+
+    if (await checkRunning()) {
+        console.log(`✅ [Enricher] Chrome already running on port ${PORT}`);
+        return;
+    }
+
+    const exe = chromePath || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+    console.log(`🚀 [Enricher] Launching Chrome on port ${PORT}...`);
+    console.log(`   Path: ${exe}`);
+    console.log(`   Profile: ${UDD}`);
+
+    const { spawn } = require('child_process');
+    const child = spawn(exe, [
+        `--remote-debugging-port=${PORT}`,
+        `--user-data-dir=${UDD}`,
+    ], { detached: true, stdio: 'ignore' });
+    child.unref();
+
+    for (let i = 0; i < 15; i++) {
+        await new Promise(r => setTimeout(r, 1000));
+        if (await checkRunning()) {
+            console.log(`✅ [Enricher] Chrome launched on port ${PORT}`);
+            return;
+        }
+    }
+    throw new Error(`Chrome did not start on port ${PORT} within 15s — check the path in Settings`);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // MAIN
 // ═══════════════════════════════════════════════════════════════════════════════
 async function run() {
@@ -131,6 +181,24 @@ async function run() {
     console.log('══════════════════════════════════════════');
 
     // ── Connect to Gemini Chrome ─────────────────────────────────────────────
+    // Read Chrome path from settings.json (same as main scraper)
+    let chromePath = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+    try {
+        const settingsFile = path.join(__dirname, '..', 'data', 'settings.json');
+        if (fs.existsSync(settingsFile)) {
+            const s = JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
+            if (s.CHROME_PATH) chromePath = s.CHROME_PATH;
+        }
+    } catch {}
+
+    // Auto-launch Chrome on port 9224 if not running
+    try {
+        await ensureGeminiChrome(chromePath);
+    } catch (err) {
+        console.error(`❌ [Enricher] Could not start Chrome: ${err.message}`);
+        process.exit(1);
+    }
+
     const gemini    = new GeminiScraper(GEMINI_CDP_URL);
     const connected = await gemini.connect();
 
@@ -141,23 +209,9 @@ async function run() {
         process.exit(1);
     }
 
-    // ── Self-test to verify Gemini is working ────────────────────────────────
-    console.log('🧪 [Enricher] Self-test: querying Gemini for "Microsoft"...');
-    const test = await gemini.selfTest(DEBUG_DIR);
-    if (!test.ok) {
-        console.error(`❌ Gemini self-test FAILED: ${test.error || 'wrong domain returned'}`);
-        console.error('');
-        console.error('TROUBLESHOOTING:');
-        console.error('  1. Is Chrome running on port 9224? Start it with:');
-        console.error('     "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --remote-debugging-port=9224 --user-data-dir="C:\\website_enricher"');
-        console.error('  2. Open http://localhost:9224 in your browser to verify Chrome is accessible');
-        console.error('  3. Make sure you are signed into your Google account in the port 9224 window');
-        console.error('  4. Navigate to https://gemini.google.com/app in that window manually');
-        if (DEBUG_DIR) console.error(`  5. Check screenshots in: ${DEBUG_DIR}`);
-        else console.error('  5. Run with --debug flag to capture screenshots for diagnosis');
-        process.exit(1);
-    }
-    console.log(`✅ [Enricher] Self-test passed (got: ${test.domain})`);
+    // ── Open fresh Gemini chat ready for queries ─────────────────────────────
+    await gemini.newChat();
+    console.log('✅ [Enricher] Gemini chat ready');
 
     // ── Discover job dir ─────────────────────────────────────────────────────
     let jobDir = null;
@@ -171,9 +225,6 @@ async function run() {
 
     const jsonlPath = path.join(jobDir, 'leads.jsonl');
     const doneFile  = path.join(jobDir, 'job.done');
-
-    // Open a fresh Gemini chat for this job — all batch queries share it
-    await gemini.newChat();
     console.log(`📂 [Enricher] Found job: ${jobDir}`);
 
     const alreadyQueued = new Set();
