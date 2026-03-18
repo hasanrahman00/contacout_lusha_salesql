@@ -21,7 +21,7 @@ const { GeminiScraper }              = require('./geminiScraper');
 const { purifyDomains, stripDomain } = require('./deepseekPurifier');
 
 const POLL_INTERVAL_MS = 3000;
-const GEMINI_BATCH     = 5;   // companies per Gemini batch query
+const GEMINI_BATCH     = 200;   // companies per Gemini batch query
 const GEMINI_CDP_URL   = 'http://127.0.0.1:9224';
 
 // ── Load .env ─────────────────────────────────────────────────────────────────
