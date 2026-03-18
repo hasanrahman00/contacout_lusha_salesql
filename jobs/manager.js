@@ -261,6 +261,7 @@ class JobManager extends EventEmitter {
 
         job.enricherStatus = 'running';
         job.enricherLog    = [];
+        this._countEnricherStats(job);
         this._save();
         this.emit('update', job);
 
@@ -279,7 +280,10 @@ class JobManager extends EventEmitter {
             job.enricherLog.push(line);
             if (job.enricherLog.length > 300) job.enricherLog.shift();
             this.emit('log', { id, line, source: 'enricher' });
-            if (/CSV regenerated|Wrote.*domain|domains confirmed/i.test(line)) this._countLeads(job);
+            if (/CSV regenerated|Wrote.*domain|domains confirmed|Processing|Watching/i.test(line)) {
+                this._countLeads(job);
+                this._countEnricherStats(job);
+            }
             this._save();
             this.emit('update', job);
         };
@@ -378,6 +382,30 @@ class JobManager extends EventEmitter {
         } catch {}
     }
 
+    // Count website enrichment stats from JSONL
+    _countEnricherStats(job) {
+        try {
+            const jsonl = path.join(job.dir, 'leads.jsonl');
+            if (!fs.existsSync(jsonl)) return;
+            const lines = fs.readFileSync(jsonl, 'utf-8').trim().split('\n').filter(Boolean);
+            let needWebsite = 0;
+            let hasWebsite  = 0;
+            for (const line of lines) {
+                try {
+                    const rec = JSON.parse(line);
+                    if (!rec.companyName?.trim()) continue;
+                    needWebsite++;
+                    // Check if website column has a value (domain filled)
+                    const ws = (rec.salesqlOrgWebsite || '').trim()
+                        .replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/.*/, '').trim();
+                    if (ws) hasWebsite++;
+                } catch {}
+            }
+            job.enricherTotal = needWebsite;
+            job.enricherDone  = hasWebsite;
+        } catch {}
+    }
+
     _safe(j) {
         let hasData = false;
         try {
@@ -391,6 +419,8 @@ class JobManager extends EventEmitter {
             createdAt: j.createdAt, logCount: j.logs?.length || 0,
             hasData,
             enricherStatus: j.enricherStatus || 'idle',
+            enricherTotal: j.enricherTotal || 0,
+            enricherDone:  j.enricherDone  || 0,
         };
     }
 
