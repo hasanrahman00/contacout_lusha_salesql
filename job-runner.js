@@ -1,18 +1,17 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// 🎬 JOB RUNNER — VikiLeads v3.3.0
+// 🎬 JOB RUNNER — VikiLeads v3.4.0 (FAST MODE)
 // ═══════════════════════════════════════════════════════════════════════════════
 //
-// FLOW (per page):
-//   1. Scroll dashboard (background — steady human speed)
-//   2. Activate ContactOut (open sidebar → API fires → captured via CDP)
-//   3. Activate Lusha (parallel with step 2)
-//   4. Wait for scroll to reach bottom
-//   5. Activate SalesQL (after scroll — needs all leads visible)
-//   4. Wait for scroll + network responses (Sales Nav + Lusha + ContactOut)
-//   5. Minimize sidebars (ContactOut + Lusha)
-//   6. Merge: Sales Nav (BASE) + ContactOut + Lusha (ENRICH)
-//   7. Save JSONL + generate CSV/XLSX
-//   8. Navigate to next page
+// FLOW (per page) — target 15–20s:
+//   1. PARALLEL: Scroll + ContactOut + Lusha (all fire at once)
+//   2. Wait for scroll to reach bottom
+//   3. Activate SalesQL (after scroll — needs all leads visible)
+//   4. Fast unified poll for all 3 responses (300ms intervals, 5s cap)
+//   5. Retry stragglers with short timeouts
+//   6. Minimize sidebars (ContactOut + Lusha)
+//   7. Merge: Sales Nav (BASE) + ContactOut + Lusha + SalesQL (ENRICH)
+//   8. Save JSONL + generate CSV/XLSX
+//   9. Navigate to next page
 //
 //         Data sources: Sales Nav (base) + Lusha + ContactOut + SalesQL (email + phone)
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -134,120 +133,120 @@ const { PageTracker }                             = require('./tasks/pageTracker
             console.log('⏳ Waiting for Sales Nav data...');
             let snReady = captureStore.isSalesNavFresh();
             if (!snReady) {
-                for (let w = 0; w < 20; w++) {
-                    await page.waitForTimeout(500);
+                for (let w = 0; w < 12; w++) {
+                    await page.waitForTimeout(400);
                     if (captureStore.isSalesNavFresh()) { snReady = true; break; }
                 }
             }
             if (snReady) console.log('✅ Sales Nav data ready (' + captureStore.getSalesNavRecords().length + ' records)');
-            else         console.log('⚠️ Sales Nav not received after 10s — will skip page');
+            else         console.log('⚠️ Sales Nav not received after 5s — will skip page');
 
             // ══════════════════════════════════════════════════════════
-            // SCROLL — background
+            // SCROLL + ContactOut + Lusha — ALL IN PARALLEL
+            // ContactOut & Lusha fire their APIs on activation.
+            // Scroll runs in background. All three launch at once.
             // ══════════════════════════════════════════════════════════
-            const scrollPromise = scrollDashboardPage(page, config.SCROLL_OPTIONS);
+            console.log('⚡ [Step 1] Parallel: Scroll + ContactOut + Lusha...');
+            const scrollPromise     = scrollDashboardPage(page, config.SCROLL_OPTIONS);
+            const contactOutPromise = activateContactOut(page);
+            const lushaPromise      = activateLusha(page);
+
+            // Wait for both extensions to finish activation (click + sidebar detect)
+            await Promise.all([contactOutPromise, lushaPromise]);
+            console.log('✅ ContactOut + Lusha activation done');
 
             // ══════════════════════════════════════════════════════════
-            // STEP 1: Activate ContactOut
-            // ══════════════════════════════════════════════════════════
-            console.log('⚡ [Step 1] ContactOut activation...');
-            await activateContactOut(page);
-
-            // ══════════════════════════════════════════════════════════
-            // STEP 2: Activate Lusha
-            // ══════════════════════════════════════════════════════════
-            console.log('⚡ [Step 2] Lusha activation...');
-            await activateLusha(page);
-
-            // ══════════════════════════════════════════════════════════
-            // Wait for scroll to finish
+            // Wait for scroll to finish (leads must all be visible)
             // ══════════════════════════════════════════════════════════
             await scrollPromise;
 
             // ══════════════════════════════════════════════════════════
-            // STEP 3: Activate SalesQL — AFTER scroll so all 25 leads
+            // STEP 2: Activate SalesQL — AFTER scroll so all 25 leads
             //         are visible and SalesQL can batch-enrich them.
+            //         (same logic as before)
             // ══════════════════════════════════════════════════════════
-            console.log('⚡ [Step 3] SalesQL activation (post-scroll)...');
+            console.log('⚡ [Step 2] SalesQL activation (post-scroll)...');
             await activateSalesQL(page);
 
             // ══════════════════════════════════════════════════════════
-            // STEP 4: Wait for Lusha + ContactOut + SalesQL responses
+            // STEP 3: Fast parallel response capture
+            // Poll ALL three sources simultaneously with tight timeouts
             // ══════════════════════════════════════════════════════════
-            console.log('⚡ [Step 4] Waiting for enrichment responses...');
+            console.log('⚡ [Step 3] Fast response capture...');
 
-            // ── Lusha (poll 500ms × 16 = 8s, retry + 6s) ──────────────
-            let luReady = captureStore.getCurrent().lusha.length > 0;
+            const POLL_INTERVAL = 300;   // ms between polls
+            const MAX_POLL_MS   = 5000;  // hard cap for initial poll round
+
+            let luReady  = captureStore.getCurrent().lusha.length > 0;
+            let coReady  = captureStore.getCurrent().contactout.length > 0;
+            let sqlReady = captureStore.getCurrent().salesql.length > 0;
+
+            // ── Unified fast poll — check all three every 300ms up to 5s ──
+            if (!luReady || !coReady || !sqlReady) {
+                const pollStart = Date.now();
+                while (Date.now() - pollStart < MAX_POLL_MS) {
+                    await page.waitForTimeout(POLL_INTERVAL);
+                    if (!luReady  && captureStore.getCurrent().lusha.length > 0)      luReady  = true;
+                    if (!coReady  && captureStore.getCurrent().contactout.length > 0)  coReady  = true;
+                    if (!sqlReady && captureStore.getCurrent().salesql.length > 0)     sqlReady = true;
+                    if (luReady && coReady && sqlReady) break;
+                }
+            }
+
+            if (luReady)  console.log('✅ Lusha data captured');
+            if (coReady)  console.log('✅ ContactOut data captured');
+            if (sqlReady) console.log(`✅ SalesQL: ${captureStore.getCurrent().salesql.length} records from network`);
+
+            // ── Retry stragglers with short extension wait (3s cap each) ──
             if (!luReady) {
-                for (let w = 0; w < 16; w++) {
-                    await page.waitForTimeout(500);
+                console.log('⚠️ Lusha not received — extra 3s wait...');
+                for (let w = 0; w < 10; w++) {
+                    await page.waitForTimeout(POLL_INTERVAL);
                     if (captureStore.getCurrent().lusha.length > 0) { luReady = true; break; }
                 }
-                if (!luReady) {
-                    // Sidebar stays open — just wait longer for the network response
-                    console.log('⚠️ Lusha not received — waiting extra 8s (sidebar open)...');
-                    for (let w = 0; w < 16; w++) {
-                        await page.waitForTimeout(500);
-                        if (captureStore.getCurrent().lusha.length > 0) { luReady = true; break; }
-                    }
-                    if (!luReady) { console.log('⚠️ Lusha missing after extended wait'); tracker.note(pageNum, 'Lusha missing'); }
-                    else { console.log('✅ Lusha arrived on extended wait'); }
-                }
-            } else { console.log('✅ Lusha data available'); }
+                if (luReady) console.log('✅ Lusha arrived on retry');
+                else { console.log('⚠️ Lusha missing'); tracker.note(pageNum, 'Lusha missing'); }
+            }
 
-            // ── ContactOut (poll 500ms × 10 = 5s, retry + 4s) ──────────
-            let coReady = captureStore.getCurrent().contactout.length > 0;
             if (!coReady) {
+                console.log('⚠️ ContactOut not received — retry activation...');
+                await minimizeContactOut(page);
+                await page.waitForTimeout(300);
+                await activateContactOut(page);
                 for (let w = 0; w < 10; w++) {
-                    await page.waitForTimeout(500);
+                    await page.waitForTimeout(POLL_INTERVAL);
                     if (captureStore.getCurrent().contactout.length > 0) { coReady = true; break; }
                 }
-                if (!coReady) {
-                    console.log('⚠️ ContactOut not received — retrying...');
-                    await minimizeContactOut(page);
-                    await page.waitForTimeout(500);
-                    await activateContactOut(page);
-                    for (let w = 0; w < 8; w++) {
-                        await page.waitForTimeout(500);
-                        if (captureStore.getCurrent().contactout.length > 0) { coReady = true; break; }
-                    }
-                    if (!coReady) { console.log('⚠️ ContactOut missing after retry'); tracker.note(pageNum, 'ContactOut missing'); }
-                    else { console.log('✅ ContactOut arrived on retry'); }
-                }
-            } else { console.log('✅ ContactOut data available'); }
+                if (coReady) console.log('✅ ContactOut arrived on retry');
+                else { console.log('⚠️ ContactOut missing after retry'); tracker.note(pageNum, 'ContactOut missing'); }
+            }
 
-            // ── SalesQL — network capture primary, DOM extraction fallback ──────
-            // Primary: api.salesql.com/extension2/search response captured via page listener
-            // Fallback: DOM extraction from iframe#humanThirdPartyIframe (availability flags only)
-            let sqlReady = captureStore.getCurrent().salesql.length > 0;
-            if (sqlReady) {
-                console.log(`✅ SalesQL: ${captureStore.getCurrent().salesql.length} records from network`);
-            } else {
-                // Poll briefly in case network response is still in-flight
-                for (let w = 0; w < 6; w++) {
-                    await page.waitForTimeout(500);
+            // ── SalesQL — network primary, DOM extraction fallback ──────
+            if (!sqlReady) {
+                // Quick poll 1.5s more
+                for (let w = 0; w < 5; w++) {
+                    await page.waitForTimeout(POLL_INTERVAL);
                     if (captureStore.getCurrent().salesql.length > 0) { sqlReady = true; break; }
                 }
                 if (sqlReady) {
-                    console.log(`✅ SalesQL: ${captureStore.getCurrent().salesql.length} records from network (delayed)`);
+                    console.log(`✅ SalesQL: ${captureStore.getCurrent().salesql.length} records (delayed)`);
                 } else {
-                    // Fallback: DOM extraction (gives name + email/phone availability counts)
-                    console.log('⚠️ SalesQL network empty — falling back to DOM extraction...');
+                    // Fallback: DOM extraction
+                    console.log('⚠️ SalesQL network empty — DOM extraction...');
                     const sqlRecords = await extractSalesQLData(page);
                     if (sqlRecords.length > 0) {
                         captureStore.getCurrent().salesql = sqlRecords;
                         sqlReady = true;
-                        console.log(`✅ SalesQL: ${sqlRecords.length} records from DOM (availability only)`);
+                        console.log(`✅ SalesQL: ${sqlRecords.length} records from DOM`);
                     } else {
-                        // Final retry — wait 3s for sidebar to render and try again
-                        await page.waitForTimeout(3000);
+                        await page.waitForTimeout(2000);
                         const sqlRetry = await extractSalesQLData(page);
                         if (sqlRetry.length > 0) {
                             captureStore.getCurrent().salesql = sqlRetry;
                             sqlReady = true;
                             console.log(`✅ SalesQL: ${sqlRetry.length} records from DOM on retry`);
                         } else {
-                            console.log('⚠️ SalesQL: no data from network or DOM');
+                            console.log('⚠️ SalesQL: no data');
                             tracker.note(pageNum, 'SalesQL empty');
                         }
                     }
@@ -255,9 +254,9 @@ const { PageTracker }                             = require('./tasks/pageTracker
             }
 
             // ══════════════════════════════════════════════════════════
-            // STEP 5: Minimize ContactOut (Lusha + SalesQL minimized before navigation)
+            // STEP 4: Minimize ContactOut (Lusha + SalesQL minimized before navigation)
             // ══════════════════════════════════════════════════════════
-            console.log('⚡ [Step 5] Minimizing ContactOut...');
+            console.log('⚡ [Step 4] Minimizing ContactOut...');
             await minimizeContactOut(page);
 
             // ── Page tracker ───────────────────────────────────────────
@@ -325,8 +324,8 @@ const { PageTracker }                             = require('./tasks/pageTracker
             await minimizeSalesQL(page);
             await minimizeLusha(page);
 
-            // Human-like pause after minimizing and before navigating (2–3s random)
-            const navDelay = 2000 + Math.floor(Math.random() * 1000);
+            // Short pause before navigating (1–1.5s)
+            const navDelay = 1000 + Math.floor(Math.random() * 500);
             console.log(`⏱ Waiting ${(navDelay/1000).toFixed(1)}s before navigation...`);
             await page.waitForTimeout(navDelay);
 
@@ -353,7 +352,7 @@ const { PageTracker }                             = require('./tasks/pageTracker
             captureStore.currentPage = currentPage;  // correct the estimate above
 
             try {
-                await page.waitForSelector("a[data-control-name^='view_lead_panel']", { state: 'visible', timeout: 15000 });
+                await page.waitForSelector("a[data-control-name^='view_lead_panel']", { state: 'visible', timeout: 10000 });
             } catch { console.log('⚠️ New page content slow'); }
         }
 

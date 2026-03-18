@@ -18,7 +18,7 @@
 const { isSalesQLOpen, waitForSalesQLCards, getSalesQLFrame } = require('./extractSalesQL');
 
 const randInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
-async function humanDelay(page, minMs = 300, maxMs = 700) {
+async function humanDelay(page, minMs = 150, maxMs = 350) {
     await page.waitForTimeout(randInt(minMs, maxMs));
 }
 
@@ -35,11 +35,11 @@ async function activateSalesQL(page) {
         if (alreadyOpen) {
             console.log('✅ [SalesQL] Sidebar already open — skipping activation');
             // Still wait for cards to be fresh (new page data may load)
-            await waitForSalesQLCards(page, 8000);
+            await waitForSalesQLCards(page, 5000);
             return true;
         }
 
-        await humanDelay(page, 400, 800);
+        await humanDelay(page, 200, 400);
 
         // ── Strategy 1: click [data-v-step="0"] in [data-v-0bc741d9] ─────────
         const clicked = await page.evaluate(() => {
@@ -94,8 +94,8 @@ async function activateSalesQL(page) {
         // ── Wait for iframe to appear ─────────────────────────────────────────
         console.log('🟠 [SalesQL] Waiting for sidebar iframe...');
         let frameReady = false;
-        for (let i = 0; i < 15; i++) {
-            await humanDelay(page, 300, 500);
+        for (let i = 0; i < 10; i++) {
+            await humanDelay(page, 200, 350);
             const frame = await getSalesQLFrame(page);
             if (frame) { frameReady = true; console.log('✅ [SalesQL] Sidebar iframe detected'); break; }
         }
@@ -106,7 +106,7 @@ async function activateSalesQL(page) {
         }
 
         // ── Wait for contact cards to render ──────────────────────────────────
-        const cardsReady = await waitForSalesQLCards(page, 12000);
+        const cardsReady = await waitForSalesQLCards(page, 8000);
         if (!cardsReady) {
             console.log('⚠️ [SalesQL] Cards did not render — sidebar may be loading');
         }

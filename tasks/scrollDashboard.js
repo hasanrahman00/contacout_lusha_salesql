@@ -21,7 +21,7 @@ async function scrollDashboardPage(page, options = {}) {
     const stepPx           = options.stepPx || 280;
     const minDelayMs       = options.minDelayMs || 500;
     const maxDelayMs       = options.maxDelayMs || 1200;
-    const timeoutMs        = options.timeoutMs || 20000;
+    const timeoutMs        = options.timeoutMs || 10000;
     const maxRounds        = options.maxRounds || 30;
     const bottomStallLimit = options.bottomStallLimit || 4;
 

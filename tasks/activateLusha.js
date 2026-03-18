@@ -115,7 +115,7 @@ async function activateLusha(page) {
 
         // Wait briefly for iframe to appear
         for (let i = 0; i < 5; i++) {
-            await page.waitForTimeout(300);
+            await page.waitForTimeout(200);
             const frames = page.frames();
             const hasFrame = frames.some(f => {
                 try {

@@ -52,19 +52,19 @@ module.exports = {
 
     MAX_PAGES: 100,
 
-    // ── Human-like scroll settings ────────────────────────────────────────
+    // ── Fast scroll settings (target 15-20s per page) ────────────────
     SCROLL_OPTIONS: {
         trackerSelector: "a[data-control-name^='view_lead_panel']",
-        minSteps: 12,
-        maxSteps: 18,
-        stepPx: 280,
-        minDelayMs: 500,
-        maxDelayMs: 1200,
-        maxRounds: 30,
-        bottomStallLimit: 4,
-        pauseChance: 0.25,
-        pauseMinMs: 800,
-        pauseMaxMs: 2500,
+        minSteps: 8,
+        maxSteps: 12,
+        stepPx: 350,
+        minDelayMs: 250,
+        maxDelayMs: 600,
+        maxRounds: 20,
+        bottomStallLimit: 3,
+        pauseChance: 0,
+        pauseMinMs: 0,
+        pauseMaxMs: 0,
     },
 
     // Network URLs to intercept

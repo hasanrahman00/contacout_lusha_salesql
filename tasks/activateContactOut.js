@@ -28,7 +28,7 @@
 const randInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
 
 // ── Smooth human-like delay ──────────────────────────────────────────────────
-async function humanDelay(page, minMs = 400, maxMs = 900) {
+async function humanDelay(page, minMs = 150, maxMs = 400) {
     await page.waitForTimeout(randInt(minMs, maxMs));
 }
 
@@ -175,7 +175,7 @@ async function activateContactOut(page) {
         try {
             await page.waitForSelector(
                 "a[data-control-name^='view_lead_panel']",
-                { state: 'visible', timeout: 8000 }
+                { state: 'visible', timeout: 5000 }
             );
             console.log('✅ [ContactOut] Lead cards visible');
         } catch {
@@ -183,7 +183,7 @@ async function activateContactOut(page) {
         }
 
         // ── Step 2: Small human-like pause before clicking ───────────────
-        await humanDelay(page, 500, 1000);
+        await humanDelay(page, 200, 400);
 
         // ── Step 3: Find the ContactOut BUTTON IFRAME ────────────────────
         let buttonFrame = null;
@@ -193,7 +193,7 @@ async function activateContactOut(page) {
             buttonFrame = await getContactOutButtonFrame(page);
             if (buttonFrame) break;
             console.log(`🟣 [ContactOut] Button iframe not found, polling... (${attempt + 1}/6)`);
-            await humanDelay(page, 500, 800);
+            await humanDelay(page, 300, 500);
         }
 
         if (!buttonFrame) {
@@ -248,8 +248,8 @@ async function activateContactOut(page) {
         console.log('🟣 [ContactOut] Waiting for sidebar to open...');
 
         let sidebarReady = false;
-        for (let i = 0; i < 15; i++) {
-            await humanDelay(page, 400, 700);
+        for (let i = 0; i < 8; i++) {
+            await humanDelay(page, 200, 350);
 
             const sidebarFrame = await getContactOutSidebarFrame(page);
             if (sidebarFrame) {
@@ -263,8 +263,8 @@ async function activateContactOut(page) {
             console.log('⚠️ [ContactOut] Sidebar not detected — API call may still fire via network');
         }
 
-        // ── Step 6: Gentle settle delay — let the API call complete ──────
-        await humanDelay(page, 1000, 2000);
+        // ── Step 6: Short settle delay — let the API call complete ──────
+        await humanDelay(page, 400, 800);
 
         return true;
 
@@ -287,34 +287,25 @@ async function minimizeContactOut(page) {
     try {
         console.log('🟣 [ContactOut] Minimizing sidebar...');
 
-        await humanDelay(page, 300, 600);
+        await humanDelay(page, 100, 250);
 
         // ── Method 1: Find sidebar iframe → click rollup inside it ───────
         const sidebarFrame = await getContactOutSidebarFrame(page);
         if (sidebarFrame) {
             const minimized = await sidebarFrame.evaluate(() => {
-                // Primary: data-testid rollup button
                 const btn = document.querySelector('button[data-testid="rollup-button"]')
                     || document.querySelector('.header-actions__rollup-button')
                     || document.querySelector('[data-testid="rollup-button"]');
                 if (btn) {
-                    btn.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-                    btn.dispatchEvent(new MouseEvent('mouseover',  { bubbles: true }));
-                    btn.dispatchEvent(new MouseEvent('mousedown',  { bubbles: true, cancelable: true }));
-                    btn.dispatchEvent(new MouseEvent('mouseup',    { bubbles: true, cancelable: true }));
-                    btn.dispatchEvent(new MouseEvent('click',      { bubbles: true, cancelable: true }));
+                    btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
                     return 'rollup';
                 }
-
-                // Fallback: co-minus span → find parent button
                 const minus = document.querySelector('.co-minus');
                 if (minus) {
                     const target = minus.closest('button') || minus;
                     target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
                     return 'co-minus';
                 }
-
-                // Fallback: any minimize/close button
                 const closeBtn = document.querySelector('[class*="minimize"]')
                     || document.querySelector('[class*="rollup"]')
                     || document.querySelector('[class*="close-btn"]');
@@ -323,12 +314,11 @@ async function minimizeContactOut(page) {
                     target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
                     return 'close-fallback';
                 }
-
                 return null;
             }).catch(() => null);
 
             if (minimized) {
-                await humanDelay(page, 400, 700);
+                await humanDelay(page, 150, 300);
                 console.log(`✅ [ContactOut] Sidebar minimized (${minimized})`);
                 return true;
             }
@@ -354,7 +344,7 @@ async function minimizeContactOut(page) {
                 }).catch(() => false);
 
                 if (clicked) {
-                    await humanDelay(page, 400, 700);
+                    await humanDelay(page, 150, 300);
                     console.log('✅ [ContactOut] Sidebar minimized (frame scan)');
                     return true;
                 }
@@ -375,7 +365,7 @@ async function minimizeContactOut(page) {
             }).catch(() => false);
 
             if (toggled) {
-                await humanDelay(page, 400, 700);
+                await humanDelay(page, 150, 300);
                 console.log('✅ [ContactOut] Sidebar toggled closed (button iframe)');
                 return true;
             }
