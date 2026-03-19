@@ -8,8 +8,10 @@ const { chromium } = require('playwright');
 
 const GEMINI_URL       = 'https://gemini.google.com/app';
 const CONNECT_TIMEOUT  = 15000;
-const RESPONSE_TIMEOUT = 45000;
-const SETTLE_MS        = 2000;
+const RESPONSE_TIMEOUT = 600000;   // 10 min safety ceiling for thinking models
+const POLL_MS          = 500;      // how often to check for response
+const IDLE_LIMIT       = 12;       // 12 × 500ms = 6s of no change after response appears → done
+const SETTLE_MS        = 1500;
 
 class GeminiScraper {
     constructor(cdpUrl = 'http://127.0.0.1:9224') {
@@ -151,21 +153,64 @@ class GeminiScraper {
         if (!sent) await page.keyboard.press('Enter');
         console.log(`   [Gemini] Query sent (responses before: ${countBefore})`);
 
-        // 5. Wait for a NEW model-response element to appear (count increases)
+        // 5. Wait for Gemini to finish (thinking model aware)
+        //    Phase A: wait for a NEW model-response element to appear
+        //    Phase B: wait for thinking/streaming to end — text stabilises + no stop button
         const deadline = Date.now() + RESPONSE_TIMEOUT;
-        let newEl = null;
+        let appeared = false;
+        let lastText = '';
+        let idleTicks = 0;        // consecutive polls with no text change
+
         while (Date.now() < deadline) {
-            await page.waitForTimeout(400);
+            await page.waitForTimeout(POLL_MS);
+
             const countNow = await this._countResponses();
-            if (countNow > countBefore) {
-                // New response appeared — now wait for streaming to finish
-                const stillStreaming = await page.evaluate(() => {
+
+            // Phase A — response element hasn't appeared yet (Gemini still thinking)
+            if (countNow <= countBefore) {
+                // Check if Gemini is actively thinking (UI shows thinking indicator)
+                const isThinking = await page.evaluate(() => {
                     return !!document.querySelector(
-                        'button[aria-label*="Stop"], button[aria-label*="stop"], .stop-button'
+                        '[class*="thinking"], [class*="Thinking"], .loading-indicator, '
+                      + 'button[aria-label*="Stop"], button[aria-label*="stop"], .stop-button'
                     );
                 }).catch(() => false);
-                if (!stillStreaming) break;
+                if (isThinking) idleTicks = 0;   // still working, reset
+                continue;
             }
+
+            // Phase B — response appeared, wait for it to finish
+            if (!appeared) {
+                appeared = true;
+                idleTicks = 0;
+                console.log(`   [Gemini] Response appeared (${((Date.now() - deadline + RESPONSE_TIMEOUT) / 1000).toFixed(1)}s)`);
+            }
+
+            // Read current text of the latest response
+            const curText = await page.evaluate((idx) => {
+                const all = document.querySelectorAll('model-response');
+                const el  = Array.from(all).slice(idx).pop();
+                if (!el) return '';
+                const md = el.querySelector('.markdown, [class*="markdown"]');
+                return ((md || el).innerText || (md || el).textContent || '').trim();
+            }, countBefore).catch(() => '');
+
+            // Check if stop button is still visible (streaming / thinking)
+            const hasStopBtn = await page.evaluate(() => {
+                return !!document.querySelector(
+                    'button[aria-label*="Stop"], button[aria-label*="stop"], .stop-button'
+                );
+            }).catch(() => false);
+
+            if (curText === lastText && !hasStopBtn) {
+                idleTicks++;
+            } else {
+                idleTicks = 0;
+                lastText = curText;
+            }
+
+            // Text stopped changing AND no stop button for IDLE_LIMIT polls → done
+            if (idleTicks >= IDLE_LIMIT) break;
         }
 
         // 6. Extra settle
@@ -251,7 +296,7 @@ class GeminiScraper {
             const n = i + 1;
 
             // Strategy A: "N. domain.com" or "N) domain.com"
-            const numberedRe = new RegExp(`^${n}[.)\s]+(.+)$`, 'i');
+            const numberedRe = new RegExp(`^${n}[.)\\s]+(.+)$`, 'i');
             let raw = null;
             for (const line of lines) {
                 const m = line.match(numberedRe);
