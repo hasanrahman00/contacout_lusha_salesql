@@ -1,36 +1,41 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// TASK: LinkedIn Company Domain Enricher — v1.1.0
+// TASK: LinkedIn Company Domain Enricher — v3.0.0
 // ═══════════════════════════════════════════════════════════════════════════════
 //
-// Uses LinkedIn Sales API via existing Playwright page session to fetch
-// company website domain for records that still have an empty Website column
-// after DeepSeek validation.
+// BATCH MODE:
+//   enrichBatchFromJSONL() runs every 2-5 pages (random interval).
+//   Called AFTER navigating to a new page, BEFORE the scraping flow starts,
+//   so it doesn't interfere with page data capture.
 //
-// Two entry points:
-//   enrichCompanyDomains(records, page)    — in-memory array (per-page use)
-//   enrichFromJSONL(leadsJsonl, leadsCSV, page, generateCSVFn)
-//       — reads JSONL, enriches empty-Website records, writes back, regenerates CSV
-//       — intended to run ONCE at end of job after waitForAllEnrichments()
+//   Records are marked _linkedinChecked=true after being processed (hit or miss)
+//   so the enricher never checks the same company twice.
 //
-// Integration in job-runner.js:
-//   await waitForAllEnrichments();
-//   await enrichFromJSONL(LEADS_JSONL, LEADS_CSV, page, generateCSV);
-//   await generateCSV(LEADS_JSONL, LEADS_CSV);
+//   Module-level company cache persists across calls — same company = 1 API call.
+//
+// DOMAIN FILTER:
+//   Filters out linkedin.com and its subdomains — some companies list LinkedIn
+//   as their "website" which is useless data.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 'use strict';
 
 const fs = require('fs');
 
-// Extract numeric company ID from companyLinkedin URL
-// "https://www.linkedin.com/sales/company/2757798" → "2757798"
+// ── Module-level company cache — shared across all batch calls ───────────────
+const _companyCache = new Map();
+
+// ── Blocked domains — useless results from LinkedIn API ──────────────────────
+const BLOCKED_DOMAINS = new Set([
+    'linkedin.com',
+    'www.linkedin.com',
+]);
+
 function extractCompanyId(companyLinkedin) {
     if (!companyLinkedin) return null;
     const m = companyLinkedin.match(/\/company\/(\d+)/);
     return m ? m[1] : null;
 }
 
-// Clean domain from full URL → bare root domain
 function cleanDomain(url) {
     return (url || '')
         .trim()
@@ -42,7 +47,14 @@ function cleanDomain(url) {
         .trim();
 }
 
-// Fetch company data via Playwright page.evaluate (uses browser cookies automatically)
+function isBlockedDomain(domain) {
+    if (!domain) return true;
+    const clean = cleanDomain(domain);
+    if (BLOCKED_DOMAINS.has(clean)) return true;
+    if (clean.endsWith('.linkedin.com')) return true;
+    return false;
+}
+
 async function fetchCompanyFromLinkedIn(page, companyId) {
     try {
         const result = await page.evaluate(async (id) => {
@@ -60,98 +72,18 @@ async function fetchCompanyFromLinkedIn(page, companyId) {
             if (!resp.ok) return null;
             return await resp.json();
         }, companyId);
-
         return result || null;
     } catch {
         return null;
     }
 }
 
-/**
- * Enrich in-memory records with company website from LinkedIn Sales API.
- * Fills only the Website column (salesqlOrgWebsite) with a clean domain.
- *
- * @param {Array}  records  - merged records from mergePageData()
- * @param {Object} page     - Playwright page object
- * @param {Object} [options]
- *   @param {number} delayMs - delay between API calls (default: 300ms)
- */
-async function enrichCompanyDomains(records, page, options = {}) {
-    const { delayMs = 300 } = options;
-
-    if (!records || records.length === 0) return records;
-
-    const companyCache = new Map();
-    let enriched = 0;
-    let skipped  = 0;
-    let noId     = 0;
-
-    for (const rec of records) {
-        // Only enrich records with empty Website
-        if (rec.salesqlOrgWebsite) { skipped++; continue; }
-
-        const companyId = extractCompanyId(rec.companyLinkedin);
-        if (!companyId) { noId++; continue; }
-
-        // Use cache to avoid duplicate API calls for same company
-        let fromCache = false;
-        if (!companyCache.has(companyId)) {
-            const data = await fetchCompanyFromLinkedIn(page, companyId);
-            companyCache.set(companyId, data);
-            await new Promise(r => setTimeout(r, delayMs));
-        } else {
-            fromCache = true;
-        }
-
-        const companyData = companyCache.get(companyId);
-        const companyLabel = `${rec.companyName || '?'} (#${companyId})`;
-
-        if (!companyData) {
-            console.log(`   ❌ [LinkedInEnrich] ${companyLabel} — API returned no data${fromCache ? ' (cached)' : ''}`);
-            continue;
-        }
-        if (!companyData.website) {
-            console.log(`   ⚠️ [LinkedInEnrich] ${companyLabel} — no website on LinkedIn${fromCache ? ' (cached)' : ''}`);
-            continue;
-        }
-
-        const domain = cleanDomain(companyData.website);
-        if (!domain) continue;
-
-        // Fill Website only — don't duplicate into Website_one/two
-        rec.salesqlOrgWebsite = domain;
-
-        // Fill employee count if empty
-        if (!rec.salesqlOrgEmployees && companyData.employeeCount) {
-            rec.salesqlOrgEmployees = String(companyData.employeeCount);
-        }
-        // Fill industry if empty
-        if (!rec.industry && companyData.industry) {
-            rec.industry = companyData.industry;
-        }
-
-        console.log(`   ✅ [LinkedInEnrich] ${companyLabel} → ${domain}${fromCache ? ' (cached)' : ''}`);
-        enriched++;
-    }
-
-    console.log(`✅ [LinkedInEnrich] Enriched:${enriched} | Already had data:${skipped} | No companyId:${noId} | API calls:${companyCache.size}`);
-    return records;
-}
-
-/**
- * Read JSONL, find records with empty Website, enrich via LinkedIn API,
- * write back to JSONL, regenerate CSV.
- *
- * Run ONCE at end of job after waitForAllEnrichments().
- *
- * @param {string}   leadsJsonl     - path to leads.jsonl
- * @param {string}   leadsCSV       - path to leads.csv
- * @param {Object}   page           - Playwright page object (still alive)
- * @param {Function} generateCSVFn  - generateCSV(jsonlPath, csvPath)
- * @param {Object}   [options]
- *   @param {number} delayMs - delay between API calls (default: 300ms)
- */
-async function enrichFromJSONL(leadsJsonl, leadsCSV, page, generateCSVFn, options = {}) {
+// ═══════════════════════════════════════════════════════════════════════════════
+// PUBLIC: Batch enrichment from JSONL
+// Reads all records, finds unchecked empty-Website records, enriches them,
+// marks all as _linkedinChecked, writes back, regenerates CSV.
+// ═══════════════════════════════════════════════════════════════════════════════
+async function enrichBatchFromJSONL(leadsJsonl, leadsCSV, page, generateCSVFn, options = {}) {
     const { delayMs = 300 } = options;
 
     if (!fs.existsSync(leadsJsonl)) {
@@ -160,47 +92,111 @@ async function enrichFromJSONL(leadsJsonl, leadsCSV, page, generateCSVFn, option
     }
 
     const lines = fs.readFileSync(leadsJsonl, 'utf-8').trim().split('\n').filter(Boolean);
-    if (lines.length === 0) {
-        console.log('⚠️ [LinkedInEnrich] JSONL is empty — skipping');
-        return;
-    }
+    if (lines.length === 0) return;
 
-    // Parse all records
     const records = [];
     for (const line of lines) {
         try { records.push(JSON.parse(line)); } catch { records.push(null); }
     }
 
-    // Find records needing enrichment: has companyLinkedin but empty Website
+    // Find unchecked records: empty Website + has companyLinkedin + not yet checked
     const needEnrich = records.filter(r =>
-        r && !r.salesqlOrgWebsite && r.companyLinkedin
+        r && !r.salesqlOrgWebsite && r.companyLinkedin && !r._linkedinChecked
     );
 
     if (needEnrich.length === 0) {
-        console.log('✅ [LinkedInEnrich] All records already have Website — nothing to enrich');
+        console.log('✅ [LinkedInEnrich] No unchecked records — skipping');
         return;
     }
 
-    console.log(`🔗 [LinkedInEnrich] ${needEnrich.length}/${records.length} records need Website enrichment...`);
+    console.log(`🔗 [LinkedInEnrich] Batch: ${needEnrich.length} unchecked records to enrich...`);
 
-    // Enrich in-place (records array shares references with needEnrich)
-    await enrichCompanyDomains(needEnrich, page, { delayMs });
+    let enriched = 0;
+    let noWebsite = 0;
+    let noData   = 0;
+    let cached   = 0;
+    let blocked  = 0;
 
-    // Dedup: if LinkedIn filled Website with same domain as Website_one or Website_two, clear the duplicate
     for (const rec of needEnrich) {
-        if (!rec.salesqlOrgWebsite) continue;
-        const w = rec.salesqlOrgWebsite;
-        if (rec.emailDomain === w)  rec.emailDomain  = '';
-        if (rec.salesqlEmail === w) rec.salesqlEmail = '';
+        const companyId = extractCompanyId(rec.companyLinkedin);
+        if (!companyId) {
+            rec._linkedinChecked = true;
+            continue;
+        }
+
+        let fromCache = false;
+        if (!_companyCache.has(companyId)) {
+            const data = await fetchCompanyFromLinkedIn(page, companyId);
+            _companyCache.set(companyId, data);
+            await new Promise(r => setTimeout(r, delayMs));
+        } else {
+            fromCache = true;
+            cached++;
+        }
+
+        const companyData = _companyCache.get(companyId);
+        const companyLabel = `${rec.companyName || '?'} (#${companyId})`;
+
+        // Mark as checked regardless of outcome — never re-check this record
+        rec._linkedinChecked = true;
+
+        if (!companyData) {
+            console.log(`   ❌ [LinkedInEnrich] ${companyLabel} — API returned no data${fromCache ? ' (cached)' : ''}`);
+            noData++;
+            continue;
+        }
+
+        if (!companyData.website) {
+            console.log(`   ⚠️ [LinkedInEnrich] ${companyLabel} — no website on LinkedIn${fromCache ? ' (cached)' : ''}`);
+            noWebsite++;
+            continue;
+        }
+
+        const domain = cleanDomain(companyData.website);
+
+        // Filter out linkedin.com and subdomains
+        if (isBlockedDomain(domain)) {
+            console.log(`   🚫 [LinkedInEnrich] ${companyLabel} — blocked domain: ${domain}${fromCache ? ' (cached)' : ''}`);
+            blocked++;
+            continue;
+        }
+
+        rec.salesqlOrgWebsite = domain;
+
+        // Dedup: clear Website_one/two if they match the new Website
+        if (rec.emailDomain === domain)  rec.emailDomain  = '';
+        if (rec.salesqlEmail === domain) rec.salesqlEmail = '';
+
+        if (!rec.salesqlOrgEmployees && companyData.employeeCount) {
+            rec.salesqlOrgEmployees = String(companyData.employeeCount);
+        }
+        if (!rec.industry && companyData.industry) {
+            rec.industry = companyData.industry;
+        }
+
+        console.log(`   ✅ [LinkedInEnrich] ${companyLabel} → ${domain}${fromCache ? ' (cached)' : ''}`);
+        enriched++;
     }
 
-    // Write back
+    console.log(`✅ [LinkedInEnrich] Enriched:${enriched} | No website:${noWebsite} | No data:${noData} | Blocked:${blocked} | Cached:${cached} | Total API calls:${_companyCache.size}`);
+
+    // Always write back — even if 0 enriched, we persist _linkedinChecked flags
     const updated = records.map(r => r ? JSON.stringify(r) : '').filter(Boolean);
     fs.writeFileSync(leadsJsonl, updated.join('\n') + '\n');
 
-    // Regenerate CSV + XLSX
-    await generateCSVFn(leadsJsonl, leadsCSV);
-    console.log(`✅ [LinkedInEnrich] JSONL + CSV regenerated`);
+    if (enriched > 0) {
+        await generateCSVFn(leadsJsonl, leadsCSV);
+        console.log(`✅ [LinkedInEnrich] JSONL + CSV regenerated`);
+    } else {
+        console.log(`✅ [LinkedInEnrich] JSONL updated (checked flags saved)`);
+    }
 }
 
-module.exports = { enrichCompanyDomains, enrichFromJSONL };
+// ═══════════════════════════════════════════════════════════════════════════════
+// PUBLIC: Generate random interval between min and max (inclusive)
+// ═══════════════════════════════════════════════════════════════════════════════
+function randomInterval(min = 2, max = 5) {
+    return min + Math.floor(Math.random() * (max - min + 1));
+}
+
+module.exports = { enrichBatchFromJSONL, randomInterval };

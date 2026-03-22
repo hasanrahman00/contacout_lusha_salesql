@@ -1,19 +1,24 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// 🎬 JOB RUNNER — VikiLeads v3.4.0 (FAST MODE)
+// 🎬 JOB RUNNER — VikiLeads v3.5.1 (SYNC ENRICHMENT + BATCH LINKEDIN)
 // ═══════════════════════════════════════════════════════════════════════════════
 //
-// FLOW (per page) — target 15–20s:
-//   1. PARALLEL: Scroll + ContactOut + Lusha (all fire at once)
+// FLOW (per page):
+//   0. [If interval hit] LinkedIn batch enrichment (previous pages' unchecked records)
+//   1. PARALLEL: Scroll + ContactOut + Lusha
 //   2. Wait for scroll to reach bottom
-//   3. Activate SalesQL (after scroll — needs all leads visible)
-//   4. Fast unified poll for all 3 responses (300ms intervals, 5s cap)
-//   5. Retry stragglers with short timeouts
-//   6. Minimize sidebars (ContactOut + Lusha)
+//   3. Activate SalesQL (post-scroll)
+//   4. Fast unified poll for all 3 responses
+//   5. Retry stragglers
+//   6. Minimize ContactOut
 //   7. Merge: Sales Nav (BASE) + ContactOut + Lusha + SalesQL (ENRICH)
 //   8. Save JSONL + generate CSV/XLSX
-//   9. Navigate to next page
+//   9. DeepSeek domain validation (awaited — batches parallel within page)
+//  10. Minimize Lusha + SalesQL → navigate to next page
 //
-//         Data sources: Sales Nav (base) + Lusha + ContactOut + SalesQL (email + phone)
+// LINKEDIN ENRICHMENT:
+//   Runs every 2-5 pages (random) AFTER landing on new page, BEFORE scraping.
+//   Also runs once at end of job for any remaining unchecked records.
+//   Records marked _linkedinChecked=true to avoid duplicate API calls.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 process.env.PW_CHROMIUM_ATTACH_TO_OTHER = '1';
@@ -47,8 +52,8 @@ const { extractSalesQLData, isSalesQLOpen }         = require('./tasks/extractSa
 const { setupNetworkCapture }                     = require('./tasks/setupNetworkCapture');
 const { mergePageData }                           = require('./tasks/mergeData');
 const { generateCSV }                             = require('./tasks/generateCSV');
-const { enrichPageAsync, waitForAllEnrichments }  = require('./tasks/deepseekEnrich');
-const { enrichFromJSONL }                         = require('./tasks/Linkedinenrich');
+const { enrichPage }                              = require('./tasks/deepseekEnrich');
+const { enrichBatchFromJSONL, randomInterval }    = require('./tasks/Linkedinenrich');
 const { PageTracker }                             = require('./tasks/pageTracker');
 
 
@@ -65,7 +70,7 @@ const { PageTracker }                             = require('./tasks/pageTracker
 
     try {
         console.log('══════════════════════════════════════════');
-        console.log('🚀 JOB STARTING — VikiLeads v3.3.0');
+        console.log('🚀 JOB STARTING — VikiLeads v3.5.1');
         console.log(`📎 URL: ${JOB_URL.slice(0, 80)}...`);
         if (JOB_URL_NUMBER) console.log(`🔢 URL Number: ${JOB_URL_NUMBER}`);
         console.log(`📂 Output: ${JOB_DIR}`);
@@ -79,13 +84,17 @@ const { PageTracker }                             = require('./tasks/pageTracker
 
         const captureStore = await setupNetworkCapture(context, browser);
 
-        // ── DeepSeek API key (from settings.json → DEEPSEEK_API_KEY) ─────────
         const DEEPSEEK_KEY = config.DEEPSEEK_API_KEY || '';
         if (DEEPSEEK_KEY) {
             console.log('🤖 [DeepSeek] Domain enrichment enabled');
         } else {
             console.log('⚠️ [DeepSeek] No API key in settings — domain enrichment disabled');
         }
+
+        // ── LinkedIn enrichment interval tracker ─────────────────────────────
+        let liPageCounter = 0;
+        let liNextInterval = randomInterval(2, 5);
+        console.log(`🔗 [LinkedInEnrich] First batch after ${liNextInterval} pages`);
 
         let navUrl = JOB_URL;
         if (START_PAGE > 1) {
@@ -104,13 +113,9 @@ const { PageTracker }                             = require('./tasks/pageTracker
         let currentPage = startInfo.pageNumber || START_PAGE || 1;
         let hasNextPage = true;
 
-        // Initialize page bucket and clear enrichment before the loop.
         captureStore.setPage(currentPage);
         captureStore.clearCurrent();
 
-        // Sales Nav may have fired during initial page load when store.currentPage
-        // was still 1 (the default). If we're starting on a page other than 1
-        // (e.g. URL has ?page=3), retag the captured data to the actual page.
         if (captureStore._latestSalesNavRecords.length > 0 &&
             captureStore._salesNavForPage !== currentPage) {
             captureStore._salesNavForPage = currentPage;
@@ -123,13 +128,23 @@ const { PageTracker }                             = require('./tasks/pageTracker
             console.log(`\n📄 ═══ Page ${pageNum} ═══`);
 
             tracker.pageStarted(pageNum);
-            // setPage + clearCurrent moved to end of previous iteration (before navigation)
 
             // ══════════════════════════════════════════════════════════
-            // WAIT FOR SALES NAV — fires on page load, must arrive before
-            // we activate extensions. Poll up to 10s (20 × 500ms).
-            // Uses isSalesNavFresh() which checks _salesNavForPage === currentPage.
-            // No explicit clear needed — page number mismatch blocks stale data.
+            // STEP 0: LinkedIn batch enrichment (every 2-5 pages)
+            // Runs BEFORE scraping so page.evaluate has a quiet window.
+            // Only on page 2+ (page 1 has no prior data to enrich).
+            // ══════════════════════════════════════════════════════════
+            liPageCounter++;
+            if (liPageCounter >= liNextInterval && liPageCounter > 1) {
+                console.log(`🔗 [LinkedInEnrich] Batch triggered (after ${liPageCounter} pages)...`);
+                await enrichBatchFromJSONL(LEADS_JSONL, LEADS_CSV, page, generateCSV);
+                liPageCounter = 0;
+                liNextInterval = randomInterval(2, 5);
+                console.log(`🔗 [LinkedInEnrich] Next batch after ${liNextInterval} more pages`);
+            }
+
+            // ══════════════════════════════════════════════════════════
+            // WAIT FOR SALES NAV
             // ══════════════════════════════════════════════════════════
             console.log('⏳ Waiting for Sales Nav data...');
             let snReady = captureStore.isSalesNavFresh();
@@ -143,46 +158,36 @@ const { PageTracker }                             = require('./tasks/pageTracker
             else         console.log('⚠️ Sales Nav not received after 5s — will skip page');
 
             // ══════════════════════════════════════════════════════════
-            // SCROLL + ContactOut + Lusha — ALL IN PARALLEL
-            // ContactOut & Lusha fire their APIs on activation.
-            // Scroll runs in background. All three launch at once.
+            // STEP 1: SCROLL + ContactOut + Lusha — ALL IN PARALLEL
             // ══════════════════════════════════════════════════════════
             console.log('⚡ [Step 1] Parallel: Scroll + ContactOut + Lusha...');
             const scrollPromise     = scrollDashboardPage(page, config.SCROLL_OPTIONS);
             const contactOutPromise = activateContactOut(page);
             const lushaPromise      = activateLusha(page);
 
-            // Wait for both extensions to finish activation (click + sidebar detect)
             await Promise.all([contactOutPromise, lushaPromise]);
             console.log('✅ ContactOut + Lusha activation done');
 
-            // ══════════════════════════════════════════════════════════
-            // Wait for scroll to finish (leads must all be visible)
-            // ══════════════════════════════════════════════════════════
             await scrollPromise;
 
             // ══════════════════════════════════════════════════════════
-            // STEP 2: Activate SalesQL — AFTER scroll so all 25 leads
-            //         are visible and SalesQL can batch-enrich them.
-            //         (same logic as before)
+            // STEP 2: Activate SalesQL (post-scroll)
             // ══════════════════════════════════════════════════════════
             console.log('⚡ [Step 2] SalesQL activation (post-scroll)...');
             await activateSalesQL(page);
 
             // ══════════════════════════════════════════════════════════
             // STEP 3: Fast parallel response capture
-            // Poll ALL three sources simultaneously with tight timeouts
             // ══════════════════════════════════════════════════════════
             console.log('⚡ [Step 3] Fast response capture...');
 
-            const POLL_INTERVAL = 300;   // ms between polls
-            const MAX_POLL_MS   = 5000;  // hard cap for initial poll round
+            const POLL_INTERVAL = 300;
+            const MAX_POLL_MS   = 5000;
 
             let luReady  = captureStore.getCurrent().lusha.length > 0;
             let coReady  = captureStore.getCurrent().contactout.length > 0;
             let sqlReady = captureStore.getCurrent().salesql.length > 0;
 
-            // ── Unified fast poll — check all three every 300ms up to 5s ──
             if (!luReady || !coReady || !sqlReady) {
                 const pollStart = Date.now();
                 while (Date.now() - pollStart < MAX_POLL_MS) {
@@ -198,7 +203,6 @@ const { PageTracker }                             = require('./tasks/pageTracker
             if (coReady)  console.log('✅ ContactOut data captured');
             if (sqlReady) console.log(`✅ SalesQL: ${captureStore.getCurrent().salesql.length} records from network`);
 
-            // ── Retry stragglers with short extension wait (3s cap each) ──
             if (!luReady) {
                 console.log('⚠️ Lusha not received — extra 3s wait...');
                 for (let w = 0; w < 10; w++) {
@@ -222,9 +226,7 @@ const { PageTracker }                             = require('./tasks/pageTracker
                 else { console.log('⚠️ ContactOut missing after retry'); tracker.note(pageNum, 'ContactOut missing'); }
             }
 
-            // ── SalesQL — network primary, DOM extraction fallback ──────
             if (!sqlReady) {
-                // Quick poll 1.5s more
                 for (let w = 0; w < 5; w++) {
                     await page.waitForTimeout(POLL_INTERVAL);
                     if (captureStore.getCurrent().salesql.length > 0) { sqlReady = true; break; }
@@ -232,7 +234,6 @@ const { PageTracker }                             = require('./tasks/pageTracker
                 if (sqlReady) {
                     console.log(`✅ SalesQL: ${captureStore.getCurrent().salesql.length} records (delayed)`);
                 } else {
-                    // Fallback: DOM extraction
                     console.log('⚠️ SalesQL network empty — DOM extraction...');
                     const sqlRecords = await extractSalesQLData(page);
                     if (sqlRecords.length > 0) {
@@ -255,17 +256,16 @@ const { PageTracker }                             = require('./tasks/pageTracker
             }
 
             // ══════════════════════════════════════════════════════════
-            // STEP 4: Minimize ContactOut (Lusha + SalesQL minimized before navigation)
+            // STEP 4: Minimize ContactOut
             // ══════════════════════════════════════════════════════════
             console.log('⚡ [Step 4] Minimizing ContactOut...');
             await minimizeContactOut(page);
 
-            // ── Page tracker ───────────────────────────────────────────
             tracker.pageExtracted(pageNum, {
                 sn:         captureStore.getSalesNavRecords().length,
                 contactout: captureStore.getCurrent().contactout.length,
                 lusha:      captureStore.getCurrent().lusha.length,
-                salesql:    captureStore.getCurrent().salesql.length,  // DOM-extracted
+                salesql:    captureStore.getCurrent().salesql.length,
             });
 
             // ══════════════════════════════════════════════════════════
@@ -298,12 +298,12 @@ const { PageTracker }                             = require('./tasks/pageTracker
                 tracker.pageSkipped(pageNum, 'no Sales Nav data — page will be missed');
             }
 
-            const totalLeads = await generateCSV(LEADS_JSONL, LEADS_CSV);
+            await generateCSV(LEADS_JSONL, LEADS_CSV);
 
-            // ── DeepSeek domain enrichment — fire and forget (runs in background) ──
-            // Does NOT block the scraper. Validates Website/Website_one/Website_two
-            // against Company Name and rewrites the best match into the Website column.
-            enrichPageAsync(merged, {
+            // ══════════════════════════════════════════════════════════
+            // STEP 7: DeepSeek domain validation (awaited)
+            // ══════════════════════════════════════════════════════════
+            await enrichPage(merged, {
                 apiKey:       DEEPSEEK_KEY,
                 leadsJsonl:   LEADS_JSONL,
                 leadsCSV:     LEADS_CSV,
@@ -312,6 +312,7 @@ const { PageTracker }                             = require('./tasks/pageTracker
             });
 
             const elapsed = ((Date.now() - pageStart) / 1000).toFixed(1);
+            const totalLeads = await generateCSV(LEADS_JSONL, LEADS_CSV);
             console.log(`✅ Page ${pageNum} done — ${totalLeads} total — ${elapsed}s`);
 
             tracker.pageSaved(pageNum, totalLeads);
@@ -319,13 +320,12 @@ const { PageTracker }                             = require('./tasks/pageTracker
             if (stopRequested) break;
 
             // ══════════════════════════════════════════════════════════
-            // STEP 6: Minimize Lusha + SalesQL before navigation
+            // STEP 9: Minimize Lusha + SalesQL before navigation
             // ══════════════════════════════════════════════════════════
-            console.log('⚡ [Step 6] Minimizing Lusha + SalesQL...');
+            console.log('⚡ [Step 9] Minimizing Lusha + SalesQL...');
             await minimizeSalesQL(page);
             await minimizeLusha(page);
 
-            // Short pause before navigating (1–1.5s)
             const navDelay = 1000 + Math.floor(Math.random() * 500);
             console.log(`⏱ Waiting ${(navDelay/1000).toFixed(1)}s before navigation...`);
             await page.waitForTimeout(navDelay);
@@ -335,9 +335,7 @@ const { PageTracker }                             = require('./tasks/pageTracker
                 console.log(`⚠️ Continuing navigation despite tracker warning`);
             }
 
-            // Clear enrichment buckets BEFORE navigation so Sales Nav data
-            // arriving during navigation is correctly seen as fresh for the next page.
-            captureStore.setPage(currentPage + 1);  // estimate; corrected below
+            captureStore.setPage(currentPage + 1);
             captureStore.clearCurrent();
 
             console.log('➡️ Moving to next page...');
@@ -350,19 +348,18 @@ const { PageTracker }                             = require('./tasks/pageTracker
 
             tracker.pageNavigated(pageNum, nextResult.pageNumber);
             currentPage = nextResult.pageNumber;
-            captureStore.currentPage = currentPage;  // correct the estimate above
+            captureStore.currentPage = currentPage;
 
             try {
                 await page.waitForSelector("a[data-control-name^='view_lead_panel']", { state: 'visible', timeout: 10000 });
             } catch { console.log('⚠️ New page content slow'); }
         }
 
-        // Wait for all background DeepSeek enrichments to finish before final CSV
-        await waitForAllEnrichments();
-        await generateCSV(LEADS_JSONL, LEADS_CSV);
+        // ── Final: LinkedIn enrichment for any remaining unchecked records ────
+        console.log('\n🔗 [LinkedInEnrich] Final batch — checking remaining records...');
+        await enrichBatchFromJSONL(LEADS_JSONL, LEADS_CSV, page, generateCSV);
 
-        // LinkedIn Sales API — fill empty Website columns using browser session
-        await enrichFromJSONL(LEADS_JSONL, LEADS_CSV, page, generateCSV);
+        await generateCSV(LEADS_JSONL, LEADS_CSV);
 
         if (stopRequested) {
             console.log(`\n⏸ Stopped at page ${currentPage}. GRACEFUL STOP.`);
@@ -377,7 +374,6 @@ const { PageTracker }                             = require('./tasks/pageTracker
 
         tracker.summary();
 
-        // Write sentinel file so website-enricher knows the job is complete
         try { fs.writeFileSync(path.join(JOB_DIR, 'job.done'), new Date().toISOString()); } catch {}
 
         process.exit(0);
