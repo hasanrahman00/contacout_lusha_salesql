@@ -1,21 +1,21 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// TASK: LinkedIn Company Domain Enricher — v3.1.0
+// TASK: LinkedIn Company Domain Enricher — v3.2.0
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // BATCH MODE:
 //   enrichBatchFromJSONL() runs every 2-5 pages (random interval).
 //   Called AFTER navigating to a new page, BEFORE the scraping flow starts.
 //
-// STATUS TRACKING:
-//   Records that are checked and have NO website get:
-//     _websiteStatus = 'not_found'
-//   This persists in JSONL so future scans skip them.
+// TARGET RECORDS (all conditions must be true):
+//   1. _purified === 'yes'                → DeepSeek has analyzed this row
+//   2. salesqlOrgWebsite is empty         → DeepSeek found no matching domain
+//   3. _websiteStatus !== 'not_found'     → not already checked by LinkedIn
+//   4. companyLinkedin exists             → has a company URL to query
 //
-//   Enricher targets:  empty salesqlOrgWebsite AND _websiteStatus !== 'not_found'
-//   Enricher skips:    has salesqlOrgWebsite (filled) OR _websiteStatus === 'not_found'
-//   Result:            every batch processes only genuinely new unchecked records.
-//
-//   _websiteStatus does NOT appear in CSV (not in COLUMNS list in generateCSV).
+// This ensures LinkedIn NEVER processes rows that DeepSeek hasn't purified.
+// With fire-and-forget DeepSeek, some rows may not be purified yet when
+// LinkedIn batch runs — those are safely skipped and caught in the next batch
+// or the final batch at end of job (after DeepSeek drains).
 //
 // DOMAIN FILTER:
 //   Filters out linkedin.com and its subdomains.
@@ -25,7 +25,6 @@
 
 const fs = require('fs');
 
-// ── Module-level company cache — shared across all batch calls ───────────────
 const _companyCache = new Map();
 
 const BLOCKED_DOMAINS = new Set([
@@ -83,8 +82,7 @@ async function fetchCompanyFromLinkedIn(page, companyId) {
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PUBLIC: Batch enrichment from JSONL
-// Targets: empty Website + no not_found status + has companyLinkedin
-// Marks misses as _websiteStatus='not_found' so they're never rechecked.
+// Only processes purified rows where Website is still empty after DeepSeek.
 // ═══════════════════════════════════════════════════════════════════════════════
 async function enrichBatchFromJSONL(leadsJsonl, leadsCSV, page, generateCSVFn, options = {}) {
     const { delayMs = 300 } = options;
@@ -102,17 +100,28 @@ async function enrichBatchFromJSONL(leadsJsonl, leadsCSV, page, generateCSVFn, o
         try { records.push(JSON.parse(line)); } catch { records.push(null); }
     }
 
-    // Target: empty Website + not already marked not_found + has company URL
+    // Only purified rows with empty Website, not already checked, with company URL
     const needEnrich = records.filter(r =>
-        r && !r.salesqlOrgWebsite && r._websiteStatus !== 'not_found' && r.companyLinkedin
+        r &&
+        r._purified === 'yes' &&
+        !r.salesqlOrgWebsite &&
+        r._websiteStatus !== 'not_found' &&
+        r.companyLinkedin
     );
 
+    // Count unpurified for logging
+    const unpurified = records.filter(r => r && !r._purified).length;
+
     if (needEnrich.length === 0) {
-        console.log('✅ [LinkedInEnrich] No new unchecked records — skipping');
+        if (unpurified > 0) {
+            console.log(`✅ [LinkedInEnrich] No purified empty-Website records — ${unpurified} still awaiting DeepSeek`);
+        } else {
+            console.log('✅ [LinkedInEnrich] No new records to enrich — skipping');
+        }
         return;
     }
 
-    console.log(`🔗 [LinkedInEnrich] Batch: ${needEnrich.length} unchecked records to enrich...`);
+    console.log(`🔗 [LinkedInEnrich] Batch: ${needEnrich.length} purified records to enrich...${unpurified > 0 ? ` (${unpurified} still awaiting DeepSeek)` : ''}`);
 
     let enriched = 0;
     let noWebsite = 0;
@@ -169,7 +178,7 @@ async function enrichBatchFromJSONL(leadsJsonl, leadsCSV, page, generateCSVFn, o
         rec.salesqlOrgWebsite = domain;
         rec._websiteStatus = '';
 
-        // Dedup: clear Website_one/two if they match the new Website
+        // Only clear W1/W2 if exact duplicate of new Website
         if (rec.emailDomain === domain)  rec.emailDomain  = '';
         if (rec.salesqlEmail === domain) rec.salesqlEmail = '';
 
@@ -186,7 +195,7 @@ async function enrichBatchFromJSONL(leadsJsonl, leadsCSV, page, generateCSVFn, o
 
     console.log(`✅ [LinkedInEnrich] Enriched:${enriched} | No website:${noWebsite} | No data:${noData} | Blocked:${blocked} | No ID:${noId} | Cached:${cached} | Total API calls:${_companyCache.size}`);
 
-    // Always write back — persists _websiteStatus='not_found' flags + any new Website fills
+    // Always write back — persists flags
     const updated = records.map(r => r ? JSON.stringify(r) : '').filter(Boolean);
     fs.writeFileSync(leadsJsonl, updated.join('\n') + '\n');
 
@@ -194,7 +203,7 @@ async function enrichBatchFromJSONL(leadsJsonl, leadsCSV, page, generateCSVFn, o
         await generateCSVFn(leadsJsonl, leadsCSV);
         console.log(`✅ [LinkedInEnrich] JSONL + CSV regenerated`);
     } else {
-        console.log(`✅ [LinkedInEnrich] JSONL updated (not_found flags saved)`);
+        console.log(`✅ [LinkedInEnrich] JSONL updated (flags saved)`);
     }
 }
 

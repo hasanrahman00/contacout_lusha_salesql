@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// 🎬 JOB RUNNER — VikiLeads v3.5.1 (SYNC ENRICHMENT + BATCH LINKEDIN)
+// 🎬 JOB RUNNER — VikiLeads v3.6.0 (FAST + BATCH LINKEDIN)
 // ═══════════════════════════════════════════════════════════════════════════════
 //
-// FLOW (per page):
-//   0. [If interval hit] LinkedIn batch enrichment (previous pages' unchecked records)
+// FLOW (per page) — target 16-18s:
+//   0. [If interval hit] LinkedIn batch (only purified empty-Website records)
 //   1. PARALLEL: Scroll + ContactOut + Lusha
 //   2. Wait for scroll to reach bottom
 //   3. Activate SalesQL (post-scroll)
@@ -12,13 +12,13 @@
 //   6. Minimize ContactOut
 //   7. Merge: Sales Nav (BASE) + ContactOut + Lusha + SalesQL (ENRICH)
 //   8. Save JSONL + generate CSV/XLSX
-//   9. DeepSeek domain validation (awaited — batches parallel within page)
+//   9. DeepSeek domain validation (fire-and-forget — stamps _purified='yes')
 //  10. Minimize Lusha + SalesQL → navigate to next page
 //
-// LINKEDIN ENRICHMENT:
-//   Runs every 2-5 pages (random) AFTER landing on new page, BEFORE scraping.
-//   Also runs once at end of job for any remaining unchecked records.
-//   Records marked _linkedinChecked=true to avoid duplicate API calls.
+// ENRICHMENT STRATEGY:
+//   DeepSeek  → fire-and-forget, stamps _purified='yes' on processed rows
+//   LinkedIn  → batch every 2-5 pages, only processes _purified='yes' rows
+//   End-of-job → drain DeepSeek (all rows purified) → final LinkedIn batch
 // ═══════════════════════════════════════════════════════════════════════════════
 
 process.env.PW_CHROMIUM_ATTACH_TO_OTHER = '1';
@@ -52,8 +52,8 @@ const { extractSalesQLData, isSalesQLOpen }         = require('./tasks/extractSa
 const { setupNetworkCapture }                     = require('./tasks/setupNetworkCapture');
 const { mergePageData }                           = require('./tasks/mergeData');
 const { generateCSV }                             = require('./tasks/generateCSV');
-const { enrichPage }                              = require('./tasks/deepseekEnrich');
-const { enrichBatchFromJSONL, randomInterval }    = require('./tasks/Linkedinenrich');
+const { enrichPageAsync, waitForAllEnrichments }  = require('./tasks/deepseekEnrich');
+const { enrichBatchFromJSONL, randomInterval }    = require('./tasks/linkedinEnrich');
 const { PageTracker }                             = require('./tasks/pageTracker');
 
 
@@ -70,7 +70,7 @@ const { PageTracker }                             = require('./tasks/pageTracker
 
     try {
         console.log('══════════════════════════════════════════');
-        console.log('🚀 JOB STARTING — VikiLeads v3.5.1');
+        console.log('🚀 JOB STARTING — VikiLeads v3.6.0');
         console.log(`📎 URL: ${JOB_URL.slice(0, 80)}...`);
         if (JOB_URL_NUMBER) console.log(`🔢 URL Number: ${JOB_URL_NUMBER}`);
         console.log(`📂 Output: ${JOB_DIR}`);
@@ -86,12 +86,11 @@ const { PageTracker }                             = require('./tasks/pageTracker
 
         const DEEPSEEK_KEY = config.DEEPSEEK_API_KEY || '';
         if (DEEPSEEK_KEY) {
-            console.log('🤖 [DeepSeek] Domain enrichment enabled');
+            console.log('🤖 [DeepSeek] Domain enrichment enabled (background)');
         } else {
             console.log('⚠️ [DeepSeek] No API key in settings — domain enrichment disabled');
         }
 
-        // ── LinkedIn enrichment interval tracker ─────────────────────────────
         let liPageCounter = 0;
         let liNextInterval = randomInterval(2, 5);
         console.log(`🔗 [LinkedInEnrich] First batch after ${liNextInterval} pages`);
@@ -130,9 +129,9 @@ const { PageTracker }                             = require('./tasks/pageTracker
             tracker.pageStarted(pageNum);
 
             // ══════════════════════════════════════════════════════════
-            // STEP 0: LinkedIn batch enrichment (every 2-5 pages)
-            // Runs BEFORE scraping so page.evaluate has a quiet window.
-            // Only on page 2+ (page 1 has no prior data to enrich).
+            // STEP 0: LinkedIn batch (every 2-5 pages)
+            // Only processes _purified='yes' rows with empty Website.
+            // Unpurified rows safely skipped — caught in next batch.
             // ══════════════════════════════════════════════════════════
             liPageCounter++;
             if (liPageCounter >= liNextInterval && liPageCounter > 1) {
@@ -298,12 +297,13 @@ const { PageTracker }                             = require('./tasks/pageTracker
                 tracker.pageSkipped(pageNum, 'no Sales Nav data — page will be missed');
             }
 
-            await generateCSV(LEADS_JSONL, LEADS_CSV);
+            const totalLeads = await generateCSV(LEADS_JSONL, LEADS_CSV);
 
             // ══════════════════════════════════════════════════════════
-            // STEP 7: DeepSeek domain validation (awaited)
+            // STEP 7: DeepSeek domain validation (fire-and-forget)
+            // Pure HTTPS — stamps _purified='yes' on processed rows
             // ══════════════════════════════════════════════════════════
-            await enrichPage(merged, {
+            enrichPageAsync(merged, {
                 apiKey:       DEEPSEEK_KEY,
                 leadsJsonl:   LEADS_JSONL,
                 leadsCSV:     LEADS_CSV,
@@ -312,7 +312,6 @@ const { PageTracker }                             = require('./tasks/pageTracker
             });
 
             const elapsed = ((Date.now() - pageStart) / 1000).toFixed(1);
-            const totalLeads = await generateCSV(LEADS_JSONL, LEADS_CSV);
             console.log(`✅ Page ${pageNum} done — ${totalLeads} total — ${elapsed}s`);
 
             tracker.pageSaved(pageNum, totalLeads);
@@ -355,8 +354,12 @@ const { PageTracker }                             = require('./tasks/pageTracker
             } catch { console.log('⚠️ New page content slow'); }
         }
 
-        // ── Final: LinkedIn enrichment for any remaining unchecked records ────
-        console.log('\n🔗 [LinkedInEnrich] Final batch — checking remaining records...');
+        // ── End of job: drain DeepSeek FIRST (all rows get _purified='yes')
+        // then final LinkedIn batch catches all purified empty-Website rows
+        await waitForAllEnrichments();
+        await generateCSV(LEADS_JSONL, LEADS_CSV);
+
+        console.log('\n🔗 [LinkedInEnrich] Final batch — checking remaining purified records...');
         await enrichBatchFromJSONL(LEADS_JSONL, LEADS_CSV, page, generateCSV);
 
         await generateCSV(LEADS_JSONL, LEADS_CSV);

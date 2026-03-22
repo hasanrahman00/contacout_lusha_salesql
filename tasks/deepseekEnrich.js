@@ -1,18 +1,23 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// 🤖 TASK: DeepSeek Company Domain Enricher — v3.0.0
+// 🤖 TASK: DeepSeek Company Domain Enricher — v3.1.0
 // ═══════════════════════════════════════════════════════════════════════════════
 //
-// SYNCHRONOUS PER-PAGE DESIGN:
-//   Scraper awaits enrichPage() after each page's merge + JSONL append.
-//   DeepSeek batches within the page still run in parallel (3 batches of 10).
-//   Results written back to JSONL + CSV regenerated before returning.
-//   Scraper resumes next page only after enrichment is complete.
+// FIRE-AND-FORGET DESIGN:
+//   DeepSeek is pure HTTPS — no Playwright page needed.
+//   enrichPageAsync() fires in background, scraper continues to next page.
+//   JSONL writes serialized via _writeLock to prevent race conditions.
+//   waitForAllEnrichments() drains at end of job before LinkedIn batch runs.
+//
+// PURIFICATION FLAG:
+//   Every record from the page gets _purified='yes' in JSONL — including
+//   records with zero candidate domains (nothing to validate, but still "done").
+//   LinkedIn enricher only targets rows with _purified='yes'.
 //
 // PHASE 2 LOGIC (runs after Phase 1 clean+dedup in mergeData.js):
 //   - All 3 domain columns are already bare root domains
 //   - DeepSeek picks which domain matches the company → Website column
-//   - Unmatched domains → Website_one and Website_two (max 2, extras dropped)
-//   - Duplicates cleared: Website takes priority
+//   - Unmatched domains → Website_one and Website_two (valid email data kept)
+//   - If no match → Website cleared, all domains stay in W1/W2
 // ═══════════════════════════════════════════════════════════════════════════════
 
 'use strict';
@@ -25,6 +30,9 @@ const MODEL       = 'deepseek-chat';
 const API_URL     = 'https://api.deepseek.com/v1/chat/completions';
 const MAX_RETRIES = 2;
 const RETRY_DELAY = 2000;
+
+const _pendingEnrichments = [];
+let _writeLock = Promise.resolve();
 
 function stripDomain(str) {
     return (str || '').trim().toLowerCase()
@@ -141,29 +149,40 @@ async function processBatch(batch, apiKey, pageNum) {
     return false;
 }
 
-async function applyToJSONL(validatedRecords, leadsJsonl, generateCSVFn, leadsCSV, pageNum) {
+async function applyToJSONL(validatedRecords, allPageRecords, leadsJsonl, generateCSVFn, leadsCSV, pageNum) {
     try {
         if (!fs.existsSync(leadsJsonl)) return;
 
-        const lines    = fs.readFileSync(leadsJsonl, 'utf-8').trim().split('\n').filter(Boolean);
+        const lines = fs.readFileSync(leadsJsonl, 'utf-8').trim().split('\n').filter(Boolean);
+
+        // Index for domain reshuffling (only validated records)
         const urlIndex = new Map();
         const nameIdx  = new Map();
-
         for (const rec of validatedRecords) {
             if (!rec._dsValidated) continue;
             if (rec.personSalesUrl) urlIndex.set(rec.personSalesUrl.toLowerCase(), rec);
             else if (rec.fullName)  nameIdx.set(rec.fullName.toLowerCase(), rec);
         }
 
+        // Index for ALL page records — used to stamp _purified on every row
+        const allUrlIdx  = new Map();
+        const allNameIdx = new Map();
+        for (const rec of allPageRecords) {
+            if (rec.personSalesUrl) allUrlIdx.set(rec.personSalesUrl.toLowerCase(), true);
+            else if (rec.fullName)  allNameIdx.set(rec.fullName.toLowerCase(), true);
+        }
+
         let changed = 0;
+        let purifiedCount = 0;
         const updated = lines.map(line => {
             let obj;
             try { obj = JSON.parse(line); } catch { return line; }
 
             const key   = (obj.personSalesUrl || '').toLowerCase();
             const kname = (obj.fullName || '').toLowerCase();
-            const match = (key && urlIndex.get(key)) || (kname && nameIdx.get(kname));
 
+            // Domain reshuffling — only for DeepSeek-validated records
+            const match = (key && urlIndex.get(key)) || (kname && nameIdx.get(kname));
             if (match && match._dsValidated) {
                 const chosenDomain = stripDomain(match._dsWebsite || '');
 
@@ -182,17 +201,26 @@ async function applyToJSONL(validatedRecords, leadsJsonl, generateCSVFn, leadsCS
                     obj.emailDomain       = allDomains[0] || '';
                     obj.salesqlEmail      = allDomains[1] || '';
                 }
-
                 changed++;
             }
+
+            // Stamp _purified on ALL records from this page
+            // (including those with no domains — DeepSeek had nothing to validate,
+            //  but they're still "done" and ready for LinkedIn enrichment)
+            const isPageRecord = (key && allUrlIdx.has(key)) || (kname && allNameIdx.has(kname));
+            if (isPageRecord && obj._purified !== 'yes') {
+                obj._purified = 'yes';
+                purifiedCount++;
+            }
+
             return JSON.stringify(obj);
         });
 
         fs.writeFileSync(leadsJsonl, updated.join('\n') + '\n');
 
-        if (changed > 0) {
+        if (changed > 0 || purifiedCount > 0) {
             await generateCSVFn(leadsJsonl, leadsCSV);
-            console.log(`✅ [DeepSeek] Page ${pageNum}: updated ${changed} records → CSV regenerated`);
+            console.log(`✅ [DeepSeek] Page ${pageNum}: updated ${changed} records, purified ${changed + purifiedCount} total → CSV regenerated`);
         }
     } catch (err) {
         console.log(`⚠️ [DeepSeek] JSONL update error: ${err.message}`);
@@ -200,35 +228,57 @@ async function applyToJSONL(validatedRecords, leadsJsonl, generateCSVFn, leadsCS
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// PUBLIC: Synchronous per-page enrichment — scraper awaits this
+// PUBLIC: Fire-and-forget — does NOT block the scraper
+// Stamps _purified='yes' on ALL page records, even those with no domains.
 // ═══════════════════════════════════════════════════════════════════════════════
-async function enrichPage(mergedRecords, { apiKey, leadsJsonl, leadsCSV, generateCSVFn, pageNum }) {
-    if (!apiKey) {
-        console.log('⚠️ [DeepSeek] No API key configured — skipping');
-        return;
-    }
+function enrichPageAsync(mergedRecords, { apiKey, leadsJsonl, leadsCSV, generateCSVFn, pageNum }) {
+    if (!mergedRecords || mergedRecords.length === 0) return;
 
     const eligible = mergedRecords.filter(r =>
         r.companyName && (r.salesqlOrgWebsite || r.emailDomain || r.salesqlEmail)
     );
 
-    if (eligible.length === 0) {
-        console.log(`🤖 [DeepSeek] Page ${pageNum}: no eligible records`);
-        return;
+    if (!apiKey) {
+        console.log('⚠️ [DeepSeek] No API key configured — stamping purified only');
     }
 
-    console.log(`🤖 [DeepSeek] Page ${pageNum}: enriching ${eligible.length} records...`);
+    const promise = (async () => {
+        if (apiKey && eligible.length > 0) {
+            console.log(`🤖 [DeepSeek] Page ${pageNum}: enriching ${eligible.length} records (background)...`);
 
-    const batches = [];
-    for (let i = 0; i < eligible.length; i += BATCH_SIZE) {
-        batches.push(eligible.slice(i, i + BATCH_SIZE));
-    }
+            const batches = [];
+            for (let i = 0; i < eligible.length; i += BATCH_SIZE) {
+                batches.push(eligible.slice(i, i + BATCH_SIZE));
+            }
 
-    await Promise.all(
-        batches.map((batch, bi) => processBatch(batch, apiKey, `${pageNum}.${bi + 1}`))
-    );
+            await Promise.all(
+                batches.map((batch, bi) => processBatch(batch, apiKey, `${pageNum}.${bi + 1}`))
+            );
+        } else if (apiKey) {
+            console.log(`🤖 [DeepSeek] Page ${pageNum}: no eligible records — stamping purified`);
+        }
 
-    await applyToJSONL(eligible, leadsJsonl, generateCSVFn, leadsCSV, pageNum);
+        // Always write back — stamps _purified on ALL page records
+        // even those with no domains (nothing to validate but still "done")
+        _writeLock = _writeLock.then(() =>
+            applyToJSONL(eligible, mergedRecords, leadsJsonl, generateCSVFn, leadsCSV, pageNum)
+        ).catch(err => console.log(`⚠️ [DeepSeek] Write lock error: ${err.message}`));
+        await _writeLock;
+    })();
+
+    _pendingEnrichments.push(promise.catch(err =>
+        console.log(`⚠️ [DeepSeek] Page ${pageNum} enrichment error: ${err.message}`)
+    ));
 }
 
-module.exports = { enrichPage };
+// ═══════════════════════════════════════════════════════════════════════════════
+// PUBLIC: Drain all pending enrichments (call at end of job)
+// ═══════════════════════════════════════════════════════════════════════════════
+async function waitForAllEnrichments() {
+    if (_pendingEnrichments.length === 0) return;
+    console.log(`🤖 [DeepSeek] Waiting for ${_pendingEnrichments.length} pending enrichment(s)...`);
+    await Promise.all(_pendingEnrichments);
+    console.log('✅ [DeepSeek] All enrichments complete');
+}
+
+module.exports = { enrichPageAsync, waitForAllEnrichments };
