@@ -80,7 +80,8 @@ input,button,textarea{font-family:var(--font)}
 
 /* ── JOB CARDS ── */
 .jg{display:flex;flex-direction:column;gap:10px}
-.jc{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:18px 22px;transition:.2s;animation:fadeUp .3s ease}
+.jc{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:18px 22px;transition:border-color .2s,background .2s}
+.jc-new{animation:fadeUp .3s ease}
 .jc:hover{border-color:var(--border2);background:var(--bg3)}
 .jc-h{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
 .jc-t{font-size:14.5px;font-weight:600;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
@@ -337,7 +338,43 @@ function render(){
     return;
   }
 
-  g.innerHTML=J.map(j=>{
+  // Build a set of current job IDs
+  const jobIds = new Set(J.map(j=>j.id));
+
+  // Remove cards that no longer exist
+  g.querySelectorAll('.jc[data-id]').forEach(el=>{
+    if(!jobIds.has(el.dataset.id)) el.remove();
+  });
+
+  // Remove empty-state if present
+  const emptyEl = g.querySelector('.empty');
+  if(emptyEl) emptyEl.remove();
+
+  // Update or create each job card
+  J.forEach(j=>{
+    const html = buildCardInner(j);
+    let card = g.querySelector(`.jc[data-id="${j.id}"]`);
+    if(card){
+      // Update existing card only if content changed
+      if(card._lastHtml !== html){
+        card.innerHTML = html;
+        card._lastHtml = html;
+      }
+    } else {
+      // New card — create with entry animation
+      card = document.createElement('div');
+      card.className = 'jc jc-new';
+      card.dataset.id = j.id;
+      card.innerHTML = html;
+      card._lastHtml = html;
+      g.prepend(card);
+      // Remove animation class after it plays so it doesn't replay
+      card.addEventListener('animationend', ()=>card.classList.remove('jc-new'), {once:true});
+    }
+  });
+}
+
+function buildCardInner(j){
     const pct=j.progress||0;
     const d=new Date(j.createdAt).toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
 
@@ -348,11 +385,9 @@ function render(){
     const hasLeads    = j.totalLeads>0;
     const hasData     = j.hasData || j.totalLeads>0;
 
-    // Button visibility logic
     const canDelete     = !scrapeBusy;
 
-    return`<div class="jc">
-      <div class="jc-h">
+    return`<div class="jc-h">
         <div class="jc-t">
           ${esc(j.name)}
           <span class="bd bd-${j.status}">${j.status}</span>
@@ -382,9 +417,7 @@ function render(){
         ${j.enricherStatus==='done' ? `<span class="bd bd-enr-done">✅ Done</span><button class="btn btn-enrich btn-sm" ${!hasData?'disabled':''} onclick="startEnricher('${j.id}')">↺ Re-run</button>` : ''}
         ${j.enricherStatus==='stopped' ? `<span class="bd bd-enr-stop">Stopped</span><button class="btn btn-enrich btn-sm" ${!hasData?'disabled':''} onclick="startEnricher('${j.id}')">↺ Restart</button>` : ''}
         ${(j.enricherStatus==='running'||j.enricherStatus==='done'||j.enricherStatus==='stopped') ? `<button class="btn btn-g btn-sm" onclick="openEnrLog('${j.id}','${esc(j.name)}')">📋 Enricher Log</button>` : ''}
-      </div>
-    </div>`;
-  }).join('');
+      </div>`;
 }
 
 function esc(s){return(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}

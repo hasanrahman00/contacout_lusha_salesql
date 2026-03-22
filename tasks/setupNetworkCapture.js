@@ -42,8 +42,6 @@ async function setupNetworkCapture(context, browser) {
         },
 
         // Returns true when SN data was captured for the current page.
-        // _salesNavForPage is set in parseSalesNavResponse to store.currentPage
-        // at the time data arrived. If that matches the current page, it's fresh.
         isSalesNavFresh() {
             return this._salesNavForPage === this.currentPage &&
                    this._latestSalesNavRecords.length > 0;
@@ -127,8 +125,8 @@ async function setupNetworkCapture(context, browser) {
 
             if (len <= 125) {
                 header = Buffer.alloc(6);
-                header[0] = 0x81;           // FIN + text opcode
-                header[1] = 0x80 | len;     // MASK + length
+                header[0] = 0x81;
+                header[1] = 0x80 | len;
                 mask.copy(header, 2);
             } else if (len <= 65535) {
                 header = Buffer.alloc(8);
@@ -155,7 +153,7 @@ async function setupNetworkCapture(context, browser) {
             while (offset + 2 <= buf.length) {
                 const b1  = buf[offset];
                 const b2  = buf[offset + 1];
-                const op  = b1 & 0x0F;   // 1=text, 8=close, 9=ping
+                const op  = b1 & 0x0F;
                 let   len = b2 & 0x7F;
                 let   hdr = 2;
 
@@ -174,10 +172,9 @@ async function setupNetworkCapture(context, browser) {
                 const payload = buf.slice(offset + hdr, offset + hdr + len);
                 offset += hdr + len;
 
-                if (op === 1) onFrame(payload.toString('utf8'));   // text
-                // op 8 = close, op 9 = ping — ignore for our purposes
+                if (op === 1) onFrame(payload.toString('utf8'));
             }
-            return buf.slice(offset);   // unconsumed bytes
+            return buf.slice(offset);
         }
 
         // ── Get Chrome's browser debugger WS URL ─────────────────────────
@@ -197,7 +194,6 @@ async function setupNetworkCapture(context, browser) {
             req.on('error', reject);
         });
 
-        // Parse ws://host:port/path
         const u     = new URL(wsUrl);
         const wsKey = crypto.randomBytes(16).toString('base64');
 
@@ -228,8 +224,8 @@ async function setupNetworkCapture(context, browser) {
 
         // ── CDP state ─────────────────────────────────────────────────────
         const trackedSessions = new Set();
-        const pendingRequests  = new Map();   // `${sid}|${reqId}` → source
-        const pendingBodies    = new Map();   // cmdId → source
+        const pendingRequests  = new Map();
+        const pendingBodies    = new Map();
         let   cmdId = 50000;
 
         const enableNetwork = (sessionId) =>
@@ -510,7 +506,7 @@ function parseSalesNavResponse(body, store) {
         if (records.length > 0) {
             store._latestSalesNavRecords = records;
             store._latestSalesNav = locations;
-            store._salesNavForPage = store.currentPage;  // tag data with which page it belongs to
+            store._salesNavForPage = store.currentPage;
             console.log(`🟢 [Sales Nav] Captured ${records.length} full records (page ${store.currentPage})`);
         }
     } catch (err) {
@@ -551,7 +547,6 @@ function parseContactOutResponse(body, store) {
             const emails = Array.isArray(profile.emails) ? profile.emails : [];
             const businessDomain = extractBestBusinessDomain(emails);
 
-            // Normalise LinkedIn URL — convert Sales Nav paths to standard /in/ paths
             let personLinkedinUrl = '';
             const rawUrl = profileUrl && profileUrl.includes('linkedin.com')
                 ? profileUrl
@@ -584,32 +579,8 @@ function parseContactOutResponse(body, store) {
 }
 
 
-
-
 // ═══════════════════════════════════════════════════════════════════════════════
-// SALESQL PARSER — v3.1.0
-// ═══════════════════════════════════════════════════════════════════════════════
-// SalesQL calls li.protechts.net and returns enriched profiles for the
-// current page's leads.
-//
-// Observed response shapes (SalesQL returns one of these):
-//   Shape A: Array of profile objects
-//     [{ full_name, emails: [{email, type}], phones: [{phone}], linkedin_url }, ...]
-//
-//   Shape B: Object with a results/leads/data array
-//     { results: [...], data: [...], leads: [...] }
-//
-//   Shape C: Map keyed by linkedin_url or member_id
-//     { "linkedin.com/in/xyz": { name, emails, phones }, ... }
-//
-// Extracted per record:
-//   fullName, firstName, lastName  (cleaned via nameCleaner)
-//   salesqlEmail  — best work email (business domain, using emailFilter)
-//   salesqlPhone  — first available phone number
-//   domain        — domain extracted from work email (for Website_one fallback)
-// ═══════════════════════════════════════════════════════════════════════════════
-// ═══════════════════════════════════════════════════════════════════════════════
-// SALESQL PARSER — v3.3.0
+// SALESQL PARSER — v3.4.0
 // ═══════════════════════════════════════════════════════════════════════════════
 // API: POST api.salesql.com/extension2/search
 //
@@ -622,24 +593,24 @@ function parseContactOutResponse(body, store) {
 // Extracted per lead:
 //   fullName, firstName, lastName        → nameCleaner applied
 //   linkedinUrl                          → profile.linkedin_url
-//   salesqlEmail                         → best non-personal email address (may be masked "...@domain.com")
-//   salesqlEmailDomain                   → domain extracted from best email
+//   salesqlEmail                         → domain only (extracted from best non-personal email)
+//   salesqlEmailDomain                   → same domain (kept for backwards compat)
 //   salesqlPhone                         → phones[0].phone (first phone)
 //   orgEmployeeCount                     → primary_organization.employees_count
 //   orgFoundedYear                       → primary_organization.founded_on_year
 //   orgWebsite                           → primary_organization.website_url
 //
 // EMAIL PRIORITY:
-//   1. type="main job" AND verified=true  → use this domain
+//   1. type="main job" AND verified=true
 //   2. If only ONE "main job" email total → use regardless of verified
-//   3. Any remaining non-personal email   → fallback
-//   4. Skip anything type="personal"
+//   3. main:true AND verified:true
+//   4. main:true (any verified)
+//   5. verified:true among job emails
+//   6. first job email (last resort)
+//   Skip: type="personal"
 // ═══════════════════════════════════════════════════════════════════════════════
 function parseSalesQLResponse(body, store) {
     try {
-        // ── Normalise body to array of wrapper items ──────────────────────────
-        // Real response shape: [ { identifier, linkedin_identifier, profile: {...} }, ... ]
-        // Each item's .profile may be null (skip those).
         let items = [];
         if (!body || typeof body !== 'object') return;
 
@@ -669,16 +640,12 @@ function parseSalesQLResponse(body, store) {
             if (!item || typeof item !== 'object') continue;
 
             // ── Extract profile object ────────────────────────────────────────
-            // Real shape: item = { identifier, linkedin_identifier, profile: {...} }
-            // profile may be null for leads SalesQL has no data on — skip them.
             let profile = null;
             if (item.profile && typeof item.profile === 'object') {
                 profile = item.profile;
             } else if (!item.profile && item.profile !== undefined) {
-                // profile key exists but is null/undefined → no data, skip
                 continue;
             } else if (item.full_name || item.linkedin_url) {
-                // Item IS the profile (flat shape)
                 profile = item;
             } else {
                 continue;
@@ -702,23 +669,12 @@ function parseSalesQLResponse(body, store) {
             const lastName  = nameParts.slice(1).join(' ') || '';
 
             // ── LinkedIn URL ──────────────────────────────────────────────────
-            // profile.linkedin_url is the confirmed URL.
-            // Fallback: reconstruct from item.linkedin_identifier at the outer level.
             let linkedinUrl = (profile.linkedin_url || '').trim();
             if (!linkedinUrl && item.linkedin_identifier) {
                 linkedinUrl = `https://www.linkedin.com/in/${item.linkedin_identifier}`;
             }
 
             // ── Email selection ───────────────────────────────────────────────
-            // Real data uses both type="job" (with main:true) and type="main job".
-            // Priority chain:
-            //   P1: type includes "main" AND verified:true
-            //   P2: only one email with type includes "main" (regardless of verified)
-            //   P3: main:true AND verified:true (catches type="job" main:true)
-            //   P4: main:true (any verified)
-            //   P5: verified:true among job emails
-            //   P6: first job email (last resort)
-            //   Skip: type="personal"
             const allEmails = Array.isArray(profile.emails) ? profile.emails : [];
             const jobEmails = allEmails.filter(e => {
                 const t = (e.type || '').toLowerCase();
@@ -727,16 +683,14 @@ function parseSalesQLResponse(body, store) {
 
             let bestEmail = null;
             if (jobEmails.length === 1) {
-                // Only one non-personal email — use it regardless of verified/main flags
                 bestEmail = jobEmails[0];
             } else if (jobEmails.length > 1) {
-                // Multiple job emails — pick the best verified one
                 const hasMainType = jobEmails.filter(e => (e.type || '').toLowerCase().includes('main'));
-                const p1 = hasMainType.filter(e => e.verified);          // type=main job + verified
-                const p2 = hasMainType;                                   // type=main job (any)
-                const p3 = jobEmails.filter(e => e.main && e.verified);  // main:true + verified
-                const p4 = jobEmails.filter(e => e.main);                 // main:true (any)
-                const p5 = jobEmails.filter(e => e.verified);             // verified (any job)
+                const p1 = hasMainType.filter(e => e.verified);
+                const p2 = hasMainType;
+                const p3 = jobEmails.filter(e => e.main && e.verified);
+                const p4 = jobEmails.filter(e => e.main);
+                const p5 = jobEmails.filter(e => e.verified);
 
                 if      (p1.length > 0) bestEmail = p1[0];
                 else if (p2.length > 0) bestEmail = p2[0];
@@ -754,13 +708,8 @@ function parseSalesQLResponse(body, store) {
                     const atMatch = addr.match(/@([a-z0-9.-]+\.[a-z]{2,})/i);
                     if (atMatch) {
                         salesqlEmailDomain = atMatch[1].toLowerCase();
-                        if (!addr.startsWith('...') && addr.includes('@')) {
-                            // Full unmasked email — store complete address
-                            salesqlEmail = addr;
-                        } else {
-                            // Masked address (e.g. ...@neosurf.com) — store domain only
-                            salesqlEmail = salesqlEmailDomain;
-                        }
+                        // Always store domain only — this maps to Website_two column
+                        salesqlEmail = salesqlEmailDomain;
                     }
                 }
             }
@@ -774,7 +723,6 @@ function parseSalesQLResponse(body, store) {
             const salesqlPhone   = pickedPhone ? (pickedPhone.phone || '').trim() : '';
 
             // ── Primary organisation ──────────────────────────────────────────
-            // Handle partial org objects (some items only have { name })
             const org = (profile.primary_organization && typeof profile.primary_organization === 'object')
                 ? profile.primary_organization
                 : {};
@@ -812,7 +760,6 @@ function parseSalesQLResponse(body, store) {
 }
 
 
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // HELPER: Decode + dispatch CDP response body
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -824,7 +771,6 @@ function _handleBody(result, source, captureStore) {
         const json = JSON.parse(raw);
 
         if (source === 'salesql') {
-            // SalesQL fires twice per page — skip second response if first already populated data
             if (captureStore.getCurrent().salesql.length >= 10) {
                 console.log('📡 [CDP flat] SalesQL duplicate response — already captured, skipping');
             } else {

@@ -1,15 +1,21 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// TASK: Merge Data — Sales Nav (BASE) + ContactOut + Lusha + SalesQL (v3.3.0)
+// TASK: Merge Data — Sales Nav (BASE) + ContactOut + Lusha + SalesQL (v3.4.0)
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // FLOW:
 //   Sales Nav    → BASE: clean names, title, company, location, about, tenure
 //   ContactOut   → ENRICH: business email domain → Website_one (+ LinkedIn URL fallback)
 //   Lusha        → ENRICH: domain + personLinkedinUrl (Lusha OVERWRITES ContactOut domain)
+//   SalesQL      → ENRICH: email domain, org website, phone, LinkedIn, org data
 //
-// DOMAIN PRIORITY for Website_one:
-//   ContactOut domain first → Lusha overwrites if it also has a domain
-//   → Final priority: Lusha > ContactOut
+// DOMAIN COLUMNS (cleaned to bare root domain before output):
+//   Website      → salesqlOrgWebsite  (SalesQL org website)
+//   Website_one  → emailDomain        (Lusha > ContactOut > SalesQL email > SalesQL org)
+//   Website_two  → salesqlEmail       (SalesQL email domain, only if unique)
+//
+// DEDUP (applied after all matching, before JSONL append):
+//   Website takes priority → duplicates cleared from Website_one / Website_two
+//   Website_one takes priority over Website_two
 //
 // NAME MATCHING:
 //   1. firstName match (unique → done; multiple → disambiguate by lastName)
@@ -60,7 +66,6 @@ function mergePageData(pageData) {
     const lushaMatched      = new Set();
     const contactoutMatched = new Set();
     const salesqlMatched    = new Set();
-    const coEmailDomainSet  = new Set();
 
     const merged = salesNavRecords.map(sn => {
         const record = { ...sn };
@@ -69,7 +74,6 @@ function mergePageData(pageData) {
         const coMatch = matchContactOutRecord(record, contactout, contactoutMatched);
         if (coMatch.domain) {
             record.emailDomain = coMatch.domain;
-            coEmailDomainSet.add(record.personSalesUrl || record.fullName);
         }
         if (coMatch.personLinkedinUrl && !record.personLinkedinUrl) {
             record.personLinkedinUrl = coMatch.personLinkedinUrl;
@@ -84,13 +88,11 @@ function mergePageData(pageData) {
         }
 
         // Set personLinkedinUrl — Lusha > ContactOut > Sales Nav conversion
-        // Track if Lusha provided a real LinkedIn URL so SalesQL won't overwrite it
         if (record.personSalesUrl) {
             if (lushaMatch.personLinkedinUrl) {
                 record.personLinkedinUrl = lushaMatch.personLinkedinUrl;
-                record._lushaLinkedin = true;   // flag: Lusha gave us a real URL
+                record._lushaLinkedin = true;
             } else if (!record.personLinkedinUrl) {
-                // Converted from Sales Nav — lower priority, SalesQL can replace
                 record.personLinkedinUrl = record.personSalesUrl.replace('/sales/lead/', '/in/');
                 record._lushaLinkedin = false;
             }
@@ -99,57 +101,31 @@ function mergePageData(pageData) {
         // ── Step 3: Match SalesQL → email, phone, LinkedIn, org data ───────────
         const sqlMatch = matchSalesQLRecord(record, salesql, salesqlMatched);
 
-        // Pre-compute clean versions of all domains for dedup comparison
+        // Pre-compute clean versions for fallback logic
         const existingWebsiteOne = cleanDomain(record.emailDomain);
         const sqlEmailDomain     = cleanDomain(sqlMatch.salesqlEmailDomain || sqlMatch.salesqlEmail);
         const orgWebsiteDomain   = cleanDomain(sqlMatch.orgWebsite);
 
-        // ── Website_one domain logic ──────────────────────────────────────────
+        // ── Website_one fallback: fill from SalesQL if Lusha/ContactOut empty ──
         // Priority: Lusha > ContactOut > SalesQL email domain > SalesQL org website
-        // SalesQL email domain fills Website_one only if currently empty
         if (!existingWebsiteOne && sqlEmailDomain) {
             record.emailDomain = sqlEmailDomain;
         }
-        // SalesQL org website domain fills Website_one only if still empty
         if (!cleanDomain(record.emailDomain) && orgWebsiteDomain) {
             record.emailDomain = orgWebsiteDomain;
         }
 
-        // ── SalesQL Email column — dedup rule ─────────────────────────────────
-        // Don't fill SalesQL Email if its domain is already present in:
-        //   - Website_one (emailDomain)     — would be a duplicate
-        //   - SalesQL Org Website domain    — same source, redundant
-        const finalWebsiteOne  = cleanDomain(record.emailDomain);
-        const sqlEmailVal      = sqlMatch.salesqlEmail || '';
-        const sqlEmailValClean = cleanDomain(sqlEmailVal);
-
-        if (sqlEmailVal && sqlEmailValClean
-            && sqlEmailValClean !== finalWebsiteOne
-            && sqlEmailValClean !== orgWebsiteDomain) {
-            // Domain is genuinely new info — show it
-            record.salesqlEmail = sqlEmailVal;
-        } else {
-            // Domain already covered by Website_one or SalesQL Org Website — omit
-            record.salesqlEmail = '';
-        }
-
-        // ── Website_one vs SalesQL Org Website dedup ─────────────────────────
-        // If Website_one's clean domain equals the org website domain, they are the same.
-        // Keep Website_one as the authoritative domain field (it's already correct).
-        // No further action needed — SalesQL Org Website column still shows the full URL.
+        // ── Website_two: assign SalesQL email domain ──────────────────────────
+        record.salesqlEmail = sqlMatch.salesqlEmail || '';
 
         // Phone
         record.salesqlPhone = sqlMatch.salesqlPhone || '';
 
-        // LinkedIn URL priority:
-        //   Lusha real URL     → never overwrite (_lushaLinkedin = true)
-        //   Converted SalesNav → SalesQL can replace (better vanity URL)
-        //   ContactOut URL     → SalesQL can replace (SalesQL is more accurate)
+        // LinkedIn URL priority: Lusha > SalesQL > ContactOut > converted SalesNav
         if (sqlMatch.linkedinUrl) {
             if (!record._lushaLinkedin) {
                 record.personLinkedinUrl = sqlMatch.linkedinUrl;
             }
-            // If Lusha provided a real URL, keep it — SalesQL is secondary
         }
 
         // Organisation enrichment from primary_organization
@@ -157,7 +133,25 @@ function mergePageData(pageData) {
         record.salesqlOrgFounded   = sqlMatch.orgFoundedYear   || '';
         record.salesqlOrgWebsite   = sqlMatch.orgWebsite       || '';
 
-        // Availability flags (for backwards compat with DOM-only data)
+        // ══════════════════════════════════════════════════════════════════
+        // PHASE 1: Clean all 3 domain columns to bare root domain + dedup
+        // This runs BEFORE JSONL append so data is clean from the start.
+        // ══════════════════════════════════════════════════════════════════
+        record.salesqlOrgWebsite = cleanDomain(record.salesqlOrgWebsite);  // Website
+        record.emailDomain       = cleanDomain(record.emailDomain);        // Website_one
+        record.salesqlEmail      = cleanDomain(record.salesqlEmail);       // Website_two
+
+        // Dedup: Website takes priority
+        if (record.salesqlOrgWebsite) {
+            if (record.emailDomain === record.salesqlOrgWebsite)  record.emailDomain  = '';
+            if (record.salesqlEmail === record.salesqlOrgWebsite) record.salesqlEmail = '';
+        }
+        // Dedup: Website_one takes priority over Website_two
+        if (record.emailDomain && record.salesqlEmail === record.emailDomain) {
+            record.salesqlEmail = '';
+        }
+
+        // Availability flags
         record.salesqlHasEmail = (record.salesqlEmail || record.emailDomain) ? 'Yes' : '';
         record.salesqlHasPhone = record.salesqlPhone ? 'Yes' : '';
 
@@ -165,17 +159,17 @@ function mergePageData(pageData) {
     }).filter(r => r.personSalesUrl || r.personLinkedinUrl);
 
     // ── Stats ──────────────────────────────────────────────────────────────
+    const websiteHits  = merged.filter(r => r.salesqlOrgWebsite).length;
     const domainHits   = merged.filter(r => r.emailDomain).length;
+    const emailHits    = merged.filter(r => r.salesqlEmail).length;
     const linkedHits   = merged.filter(r => r.personLinkedinUrl).length;
-    const sqlEmailHits    = merged.filter(r => r.salesqlEmail || r.emailDomain).length;
-    const sqlPhoneHits    = merged.filter(r => r.salesqlPhone).length;
-    const sqlOrgHits      = merged.filter(r => r.salesqlOrgWebsite).length;
+    const sqlPhoneHits = merged.filter(r => r.salesqlPhone).length;
 
     console.log(`✅ [Merge] SalesNav base: ${salesNavRecords.length}`);
     console.log(`✅ [Merge] ContactOut matched: ${contactoutMatched.size}/${contactout.length}`);
     console.log(`✅ [Merge] Lusha matched: ${lushaMatched.size}/${lusha.length}`);
-    console.log(`✅ [Merge] SalesQL matched: ${salesqlMatched.size}/${salesql.length} | emails:${sqlEmailHits} phones:${sqlPhoneHits} org-sites:${sqlOrgHits}`);
-    console.log(`✅ [Merge] Website_one filled: ${domainHits}  LinkedIn URL: ${linkedHits}`);
+    console.log(`✅ [Merge] SalesQL matched: ${salesqlMatched.size}/${salesql.length} | phones:${sqlPhoneHits}`);
+    console.log(`✅ [Merge] Domains — Website:${websiteHits} Website_one:${domainHits} Website_two:${emailHits}  LinkedIn:${linkedHits}`);
     console.log(`✅ [Merge] Total records: ${merged.length}`);
 
     return merged;
@@ -313,14 +307,8 @@ function normFull(str) {
 }
 
 
-
-
 // ═══════════════════════════════════════════════════════════════════════════════
-// SALESQL MATCHING — v3.1.0
-// ═══════════════════════════════════════════════════════════════════════════════
-// Same name-matching strategy as Lusha/ContactOut.
-// Returns { salesqlEmail, salesqlPhone, domain }.
-// Domain is only used if Lusha and ContactOut both returned empty.
+// SALESQL MATCHING
 // ═══════════════════════════════════════════════════════════════════════════════
 function matchSalesQLRecord(record, salesqlRecords, matchedSet) {
     const empty = { salesqlEmail: '', salesqlPhone: '', domain: '' };
@@ -332,7 +320,6 @@ function matchSalesQLRecord(record, salesqlRecords, matchedSet) {
 
     if (!recFirst && !recLast) return empty;
 
-    // Strategy 1: firstName match
     if (recFirst) {
         const hits = [];
         for (let i = 0; i < salesqlRecords.length; i++) {
@@ -352,7 +339,6 @@ function matchSalesQLRecord(record, salesqlRecords, matchedSet) {
         }
     }
 
-    // Strategy 2: lastName match
     if (recLast) {
         const hits = [];
         for (let i = 0; i < salesqlRecords.length; i++) {
@@ -372,7 +358,6 @@ function matchSalesQLRecord(record, salesqlRecords, matchedSet) {
         }
     }
 
-    // Strategy 3: fullName match
     if (recFull) {
         for (let i = 0; i < salesqlRecords.length; i++) {
             if (matchedSet.has(i)) continue;

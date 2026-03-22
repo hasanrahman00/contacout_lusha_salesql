@@ -1,43 +1,42 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// 🤖 TASK: DeepSeek Company Domain Enricher — v1.0.0
+// 🤖 TASK: DeepSeek Company Domain Enricher — v2.0.0
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // PURPOSE:
-//   After each page is scraped and merged, send each lead's company + domains
-//   to DeepSeek to validate which domain actually belongs to the company.
-//   Result is written back into the JSONL and regenerated into CSV/XLSX.
+//   After each page is scraped, merged, cleaned, deduped, and appended to JSONL,
+//   send each lead's company name + clean domains to DeepSeek to validate which
+//   domain belongs to the company. Result is written back into JSONL + CSV/XLSX.
+//
+// PHASE 2 LOGIC (runs after Phase 1 clean+dedup in mergeData.js):
+//   - All 3 domain columns are already bare root domains (e.g. "acme.com")
+//   - DeepSeek picks which domain matches the company → Website column
+//   - Unmatched domains → Website_one and Website_two (max 2, extras dropped)
+//   - Duplicates cleared: Website takes priority
 //
 // PARALLEL DESIGN:
-//   - Job runner calls enrichPageAsync(records, ...) and does NOT await it.
-//   - Each page's enrichment runs concurrently with the scraper's next page.
-//   - Records are processed in parallel batches (BATCH_SIZE per API call).
-//   - Results are written to a separate enriched JSONL, then CSV/XLSX is
-//     regenerated once all pending work drains (or at job end).
+//   - Job runner calls enrichPageAsync() fire-and-forget (does NOT await).
+//   - DeepSeek API calls run in parallel batches.
+//   - JSONL writes are serialized via _writeLock to prevent race conditions.
 //
-// DEEPSEEK PROMPT per batch:
-//   Given company name and up to 3 candidate domains, pick the one that
-//   belongs to the company. If none match, return null.
-//
-// API: https://api.deepseek.com/v1/chat/completions
-//   Model: deepseek-chat
-//   API key: from settings.json → DEEPSEEK_API_KEY
+// API: https://api.deepseek.com/v1/chat/completions  Model: deepseek-chat
 // ═══════════════════════════════════════════════════════════════════════════════
 
 'use strict';
 
-const fs      = require('fs');
-const https   = require('https');
-const path    = require('path');
+const fs    = require('fs');
+const https = require('https');
 
-// Batch size: how many leads to send in one DeepSeek call (cost vs latency tradeoff)
-const BATCH_SIZE    = 10;
-const MODEL         = 'deepseek-chat';
-const API_URL       = 'https://api.deepseek.com/v1/chat/completions';
-const MAX_RETRIES   = 2;
-const RETRY_DELAY   = 2000;
+const BATCH_SIZE  = 10;
+const MODEL       = 'deepseek-chat';
+const API_URL     = 'https://api.deepseek.com/v1/chat/completions';
+const MAX_RETRIES = 2;
+const RETRY_DELAY = 2000;
 
 // ── Active pending enrichment promises (fire-and-forget tracker) ─────────────
 const _pendingEnrichments = [];
+
+// ── Serialize JSONL writes — prevents race condition between concurrent pages ─
+let _writeLock = Promise.resolve();
 
 // ── Strip domain to bare form: "https://www.foo.com/path" → "foo.com" ─────────
 function stripDomain(str) {
@@ -92,7 +91,6 @@ function buildPrompt(batch) {
         const d1 = stripDomain(r.salesqlOrgWebsite);
         const d2 = stripDomain(r.emailDomain);
         const d3 = stripDomain(r.salesqlEmail);
-        // Deduplicate candidates
         const candidates = [...new Set([d1, d2, d3].filter(Boolean))];
         return `${i}: company="${r.companyName}" candidates=[${candidates.join(', ')}]`;
     }).join('\n');
@@ -126,7 +124,6 @@ async function processBatch(batch, apiKey, pageNum) {
 
             const results = Array.isArray(parsed.results) ? parsed.results : [];
 
-            // Apply results back to batch records
             for (const item of results) {
                 const rec = batch[item.index];
                 if (!rec) continue;
@@ -137,12 +134,9 @@ async function processBatch(batch, apiKey, pageNum) {
                 const d3 = stripDomain(rec.salesqlEmail);
 
                 if (chosen && [d1, d2, d3].includes(chosen)) {
-                    // DeepSeek picked a winner — set Website to the full URL from the matching source
-                    if (chosen === d1) rec._dsWebsite = rec.salesqlOrgWebsite || chosen;
-                    else if (chosen === d2) rec._dsWebsite = rec.emailDomain || chosen;
-                    else rec._dsWebsite = rec.salesqlEmail || chosen;
+                    // DeepSeek matched — store the clean bare domain
+                    rec._dsWebsite = chosen;
                 } else {
-                    // No match found
                     rec._dsWebsite = null;
                 }
                 rec._dsValidated = true;
@@ -170,8 +164,8 @@ async function applyToJSONL(validatedRecords, leadsJsonl, generateCSVFn, leadsCS
         if (!fs.existsSync(leadsJsonl)) return;
 
         const lines    = fs.readFileSync(leadsJsonl, 'utf-8').trim().split('\n').filter(Boolean);
-        const urlIndex = new Map(); // personSalesUrl → validated record
-        const nameIdx  = new Map(); // fullName       → validated record
+        const urlIndex = new Map();
+        const nameIdx  = new Map();
 
         for (const rec of validatedRecords) {
             if (!rec._dsValidated) continue;
@@ -184,35 +178,34 @@ async function applyToJSONL(validatedRecords, leadsJsonl, generateCSVFn, leadsCS
             let obj;
             try { obj = JSON.parse(line); } catch { return line; }
 
-            const key  = (obj.personSalesUrl || '').toLowerCase();
+            const key   = (obj.personSalesUrl || '').toLowerCase();
             const kname = (obj.fullName || '').toLowerCase();
             const match = (key && urlIndex.get(key)) || (kname && nameIdx.get(kname));
 
             if (match && match._dsValidated) {
-                const newSite    = match._dsWebsite || '';
-                const newDomain  = stripDomain(newSite);
+                const chosenDomain = stripDomain(match._dsWebsite || '');
 
-                // Write validated domain into Website column
-                obj.salesqlOrgWebsite = newSite;
-
-                // ── Dedup: remove Website_one / Website_two if they carry the same
-                //    domain as the validated Website. After DeepSeek picks the winner,
-                //    keeping duplicates in the other columns adds no information.
+                // Collect all current domains from the record
+                const w  = stripDomain(obj.salesqlOrgWebsite);
                 const w1 = stripDomain(obj.emailDomain);
                 const w2 = stripDomain(obj.salesqlEmail);
 
-                if (newDomain) {
-                    // Clear Website_one if it's the same bare domain as Website
-                    if (w1 && w1 === newDomain) obj.emailDomain  = '';
-                    // Clear Website_two if it's the same bare domain as Website
-                    if (w2 && w2 === newDomain) obj.salesqlEmail = '';
-                    // Also clear Website_two if it duplicates Website_one (after above)
-                    const w1After = stripDomain(obj.emailDomain);
-                    const w2After = stripDomain(obj.salesqlEmail);
-                    if (w1After && w2After && w1After === w2After) obj.salesqlEmail = '';
+                if (chosenDomain) {
+                    // ── Match found: winner → Website, remaining → one/two ──
+                    obj.salesqlOrgWebsite = chosenDomain;
+
+                    // Collect unmatched domains (unique, exclude the winner)
+                    // Include w — the original Website value that's being overwritten by the winner
+                    const remaining = [...new Set([w, w1, w2].filter(d => d && d !== chosenDomain))];
+                    obj.emailDomain  = remaining[0] || '';
+                    obj.salesqlEmail = remaining[1] || '';
                 } else {
-                    // DeepSeek found no match — clear Website, leave Website_one/two as-is
+                    // ── No match: clear Website, keep up to 2 in one/two ────
+                    const allDomains = [...new Set([w, w1, w2].filter(Boolean))];
                     obj.salesqlOrgWebsite = '';
+                    obj.emailDomain       = allDomains[0] || '';
+                    obj.salesqlEmail      = allDomains[1] || '';
+                    // 3rd domain dropped (2-domain cap)
                 }
 
                 changed++;
@@ -233,7 +226,6 @@ async function applyToJSONL(validatedRecords, leadsJsonl, generateCSVFn, leadsCS
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PUBLIC: Fire-and-forget enrichment for one page's merged records
-// Call from job-runner WITHOUT await — runs in background while scraper continues
 // ═══════════════════════════════════════════════════════════════════════════════
 function enrichPageAsync(mergedRecords, { apiKey, leadsJsonl, leadsCSV, generateCSVFn, pageNum }) {
     if (!apiKey) {
@@ -254,7 +246,7 @@ function enrichPageAsync(mergedRecords, { apiKey, leadsJsonl, leadsCSV, generate
     const promise = (async () => {
         console.log(`🤖 [DeepSeek] Page ${pageNum}: enriching ${eligible.length} records (background)...`);
 
-        // Split into batches and process all in parallel
+        // Split into batches and process DeepSeek API calls in parallel
         const batches = [];
         for (let i = 0; i < eligible.length; i += BATCH_SIZE) {
             batches.push(eligible.slice(i, i + BATCH_SIZE));
@@ -264,11 +256,14 @@ function enrichPageAsync(mergedRecords, { apiKey, leadsJsonl, leadsCSV, generate
             batches.map((batch, bi) => processBatch(batch, apiKey, `${pageNum}.${bi + 1}`))
         );
 
-        // Write results back
-        await applyToJSONL(eligible, leadsJsonl, generateCSVFn, leadsCSV, pageNum);
+        // Serialize JSONL writes — chain onto _writeLock so concurrent pages
+        // don't read/write the same file simultaneously
+        _writeLock = _writeLock.then(() =>
+            applyToJSONL(eligible, leadsJsonl, generateCSVFn, leadsCSV, pageNum)
+        ).catch(err => console.log(`⚠️ [DeepSeek] Write lock error: ${err.message}`));
+        await _writeLock;
     })();
 
-    // Track promise so waitForAll() can drain at job end
     _pendingEnrichments.push(promise.catch(err =>
         console.log(`⚠️ [DeepSeek] Page ${pageNum} enrichment error: ${err.message}`)
     ));
