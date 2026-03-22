@@ -48,6 +48,7 @@ const { setupNetworkCapture }                     = require('./tasks/setupNetwor
 const { mergePageData }                           = require('./tasks/mergeData');
 const { generateCSV }                             = require('./tasks/generateCSV');
 const { enrichPageAsync, waitForAllEnrichments }  = require('./tasks/deepseekEnrich');
+const { enrichFromJSONL }                         = require('./tasks/Linkedinenrich');
 const { PageTracker }                             = require('./tasks/pageTracker');
 
 
@@ -359,6 +360,9 @@ const { PageTracker }                             = require('./tasks/pageTracker
         // Wait for all background DeepSeek enrichments to finish before final CSV
         await waitForAllEnrichments();
         await generateCSV(LEADS_JSONL, LEADS_CSV);
+
+        // LinkedIn Sales API — fill empty Website columns using browser session
+        await enrichFromJSONL(LEADS_JSONL, LEADS_CSV, page, generateCSV);
 
         if (stopRequested) {
             console.log(`\n⏸ Stopped at page ${currentPage}. GRACEFUL STOP.`);
