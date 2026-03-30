@@ -6,10 +6,11 @@
 // ═════════════════════════════════════════════════════════════════
 
 const { spawn } = require('child_process');
+const config = require('../config');
 
 async function isChromeRunning(port) {
     try {
-        const res = await fetch(`http://127.0.0.1:${port}/json/version`, {
+        const res = await fetch(`http://${config.CDP_HOST}:${port}/json/version`, {
             signal: AbortSignal.timeout(3000),
         });
         if (res.ok) {

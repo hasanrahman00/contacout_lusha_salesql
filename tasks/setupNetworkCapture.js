@@ -114,7 +114,8 @@ async function setupNetworkCapture(context, browser) {
     try {
         const http   = require('http');
         const crypto = require('crypto');
-        const port   = config.PORT || 9222;
+        const port    = config.PORT || 9222;
+        const cdpHost = config.CDP_HOST || '127.0.0.1';
 
         // ── Minimal WebSocket frame encoder (client→server, always masked) ──
         function wsEncode(data) {
@@ -180,7 +181,7 @@ async function setupNetworkCapture(context, browser) {
         // ── Get Chrome's browser debugger WS URL ─────────────────────────
         const wsUrl = await new Promise((resolve, reject) => {
             const req = http.get(
-                `http://127.0.0.1:${port}/json/version`,
+                `http://${cdpHost}:${port}/json/version`,
                 { timeout: 3000 },
                 (res) => {
                     let d = '';
@@ -195,6 +196,8 @@ async function setupNetworkCapture(context, browser) {
         });
 
         const u     = new URL(wsUrl);
+        // Chrome returns ws://127.0.0.1:... but inside Docker we connect via CDP_HOST
+        u.hostname  = cdpHost;
         const wsKey = crypto.randomBytes(16).toString('base64');
 
         // ── Open raw TCP + HTTP Upgrade handshake ────────────────────────
