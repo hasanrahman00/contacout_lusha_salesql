@@ -105,21 +105,6 @@ function register(router) {
         res.json({ logs: jobs.getLogs(req.params.id) });
     });
 
-    // ── Website Enricher: start / stop / logs ────────────────────────────
-    router.post('/api/jobs/:id/enricher/start', (req, res) => {
-        const r = jobs.startEnricher(req.params.id);
-        r.error ? res.error(r.error, 400) : res.json(r);
-    });
-
-    router.post('/api/jobs/:id/enricher/stop', (req, res) => {
-        const r = jobs.stopEnricher(req.params.id);
-        r?.error ? res.error(r.error, 400) : res.json(r);
-    });
-
-    router.get('/api/jobs/:id/enricher/logs', (req, res) => {
-        res.json({ logs: jobs.getEnricherLogs(req.params.id) });
-    });
-
     // ── Chrome settings ───────────────────────────────────────────────────
     router.get('/api/settings', (req, res) => {
         let saved = {};
