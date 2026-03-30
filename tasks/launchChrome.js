@@ -31,6 +31,14 @@ async function launchChrome(chromePath, port, userDataDir) {
         return null;
     }
 
+    // Docker mode or missing config — can't launch Chrome from here
+    if (!chromePath) {
+        throw new Error(
+            `Chrome is not reachable on ${config.CDP_HOST}:${port}. ` +
+            `Please launch Chrome manually with: --remote-debugging-port=${port}`
+        );
+    }
+
     console.log('🚀 Launching Chrome with debugging...');
 
     // 🔧 Spawn Chrome process with debugging flags
