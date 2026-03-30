@@ -1,8 +1,8 @@
 // ═════════════════════════════════════════════════════════════════
 // 🚀 TASK: Launch Chrome with Debugging
 // ═════════════════════════════════════════════════════════════════
-// Purpose: Start Chrome with remote debugging enabled
-// Reuses existing Chrome if already running on the debug port
+// LOCAL MODE  (CHROME_PATH set) → auto-launch if not running, reuse if running
+// DOCKER MODE (CHROME_PATH empty) → connect only, clear error if not reachable
 // ═════════════════════════════════════════════════════════════════
 
 const { spawn } = require('child_process');
@@ -31,19 +31,23 @@ async function launchChrome(chromePath, port, userDataDir) {
         return null;
     }
 
-    // Docker mode or missing config — can't launch Chrome from here
+    // ── Docker / remote mode: no CHROME_PATH means we can't launch ──────
     if (!chromePath) {
         throw new Error(
-            `Chrome is not reachable on ${config.CDP_HOST}:${port}. ` +
-            `Please launch Chrome manually with: --remote-debugging-port=${port}`
+            `Chrome is not reachable on ${config.CDP_HOST}:${port}.\n` +
+            `Launch Chrome manually with:\n` +
+            `  "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" ` +
+            `--remote-debugging-port=${port} --remote-allow-origins=* ` +
+            `--user-data-dir="C:\\Chrome_Scraper"`
         );
     }
 
+    // ── Local mode: auto-launch Chrome ──────────────────────────────────
     console.log('🚀 Launching Chrome with debugging...');
 
-    // 🔧 Spawn Chrome process with debugging flags
     const chromeProcess = spawn(chromePath, [
         `--remote-debugging-port=${port}`,
+        `--remote-allow-origins=*`,
         `--user-data-dir=${userDataDir}`
     ], {
         detached: true,
@@ -52,11 +56,17 @@ async function launchChrome(chromePath, port, userDataDir) {
 
     chromeProcess.unref();
 
-    console.log(`✅ Chrome launched on port ${port}`);
+    // Wait for Chrome to start, then verify it's reachable
+    console.log(`⏳ Waiting for Chrome to start on port ${port}...`);
+    for (let i = 0; i < 10; i++) {
+        await new Promise(r => setTimeout(r, 1000));
+        if (await isChromeRunning(port)) {
+            console.log(`✅ Chrome launched and ready on port ${port}`);
+            return chromeProcess;
+        }
+    }
 
-    // ⏰ Wait for Chrome to start up
-    await new Promise(resolve => setTimeout(resolve, 5000));
-
+    console.log(`⚠️ Chrome launched but not yet responding — continuing anyway`);
     return chromeProcess;
 }
 
