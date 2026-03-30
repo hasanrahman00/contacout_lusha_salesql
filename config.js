@@ -1,5 +1,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// ⚙️ CONFIGURATION FILE — v3.0.0
+// ⚙️ CONFIGURATION FILE — v3.7.0
+// ═══════════════════════════════════════════════════════════════════════════════
+// Priority: process.env (Docker/system) → .env file → settings.json (dashboard) → defaults
 // ═══════════════════════════════════════════════════════════════════════════════
 
 process.env.PW_CHROMIUM_ATTACH_TO_OTHER = '1';
@@ -7,13 +9,10 @@ process.env.PW_CHROMIUM_ATTACH_TO_OTHER = '1';
 const fs   = require('fs');
 const path = require('path');
 
-// ── Load .env file (no dotenv package needed — pure Node fs) ─────────────────
-// .env lives in the project root alongside config.js
-// Format: KEY=value  (# comments supported, blank lines ignored)
+// ── Load .env file (pure Node, no dotenv) ───────────────────────────────────
 const ENV_FILE = path.join(__dirname, '.env');
 if (fs.existsSync(ENV_FILE)) {
-    const envLines = fs.readFileSync(ENV_FILE, 'utf-8').split('\n');
-    for (const raw of envLines) {
+    for (const raw of fs.readFileSync(ENV_FILE, 'utf-8').split('\n')) {
         const line = raw.trim();
         if (!line || line.startsWith('#')) continue;
         const eq = line.indexOf('=');
@@ -26,33 +25,41 @@ if (fs.existsSync(ENV_FILE)) {
     }
 }
 
+// ── Dashboard settings.json (UI overrides, lowest priority) ─────────────────
 const SETTINGS_FILE = path.join(__dirname, 'data', 'settings.json');
-
-const DEFAULTS = {
-    CHROME_PATH: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    USER_DATA_DIR: 'C:\\Chrome_Scraper',
-    PORT: 9222,
-};
-
-let userSettings = {};
+let dashSettings = {};
 try {
     if (fs.existsSync(SETTINGS_FILE)) {
-        userSettings = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf-8'));
+        dashSettings = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf-8'));
     }
 } catch {}
 
-const PORT = userSettings.PORT || DEFAULTS.PORT;
+// ── Helper: env var → dashboard setting → default ───────────────────────────
+const env = (key, fallback) => process.env[key] || dashSettings[key] || fallback;
+
+// ── Resolved config ─────────────────────────────────────────────────────────
+const CHROME_PATH   = env('CHROME_PATH',   '');
+const USER_DATA_DIR = env('USER_DATA_DIR',  '');
+const PORT          = parseInt(env('CDP_PORT', '9222'), 10);
+const CDP_HOST      = env('CDP_HOST', '127.0.0.1');
 
 module.exports = {
+    // Chrome
+    CHROME_PATH,
+    USER_DATA_DIR,
     PORT,
-    CDP_URL: `http://127.0.0.1:${PORT}`,
-    CHROME_PATH:       userSettings.CHROME_PATH       || DEFAULTS.CHROME_PATH,
-    USER_DATA_DIR:     userSettings.USER_DATA_DIR      || DEFAULTS.USER_DATA_DIR,
-    DEEPSEEK_API_KEY:  process.env.DEEPSEEK_API_KEY || userSettings.DEEPSEEK_API_KEY || '',
 
-    MAX_PAGES: 100,
+    // CDP connection
+    CDP_HOST,
+    CDP_URL: `http://${CDP_HOST}:${PORT}`,
 
-    // ── Fast scroll settings (target 15-20s per page) ────────────────
+    // API keys
+    DEEPSEEK_API_KEY: env('DEEPSEEK_API_KEY', ''),
+
+    // Scraper
+    MAX_PAGES: parseInt(env('MAX_PAGES', '100'), 10),
+
+    // Fast scroll settings
     SCROLL_OPTIONS: {
         trackerSelector: "a[data-control-name^='view_lead_panel']",
         minSteps: 8,
@@ -75,6 +82,7 @@ module.exports = {
         SALESQL:    'api.salesql.com/extension2/search',
     },
 
+    // For dashboard settings page
     SETTINGS_FILE,
-    DEFAULTS,
+    DEFAULTS: { CHROME_PATH, USER_DATA_DIR, PORT },
 };
