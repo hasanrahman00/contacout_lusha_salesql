@@ -1,10 +1,14 @@
-{
-  "type": "error",
-  "error":
-    {
-      "type": "not_found_error",
-      "message": "File not found in container: /mnt/user-data/outputs/docker-compose.yml",
-      "details": { "error_visibility": "user_facing" },
-    },
-  "request_id": "req_011CZZmDVhHu1GZe6AAgTJHd",
-}
+services:
+  vikileads:
+    image: hasandocker4/vikileads:3.6.0
+    container_name: vikileads
+    ports:
+      - "3002:3002"
+    environment:
+      - CDP_HOST=host.docker.internal
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
