@@ -59,6 +59,10 @@ module.exports = {
     // Scraper
     MAX_PAGES: parseInt(env('MAX_PAGES', '100'), 10),
 
+    // UI controls (set via docker-compose environment)
+    HIDE_LOGS:     env('HIDE_LOGS', '')     === 'true',
+    HIDE_SETTINGS: env('HIDE_SETTINGS', '') === 'true',
+
     // Fast scroll settings
     SCROLL_OPTIONS: {
         trackerSelector: "a[data-control-name^='view_lead_panel']",

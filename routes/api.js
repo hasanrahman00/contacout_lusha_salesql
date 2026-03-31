@@ -105,6 +105,14 @@ function register(router) {
         res.json({ logs: jobs.getLogs(req.params.id) });
     });
 
+    // ── UI config (controls what the client sees) ────────────────────────
+    router.get('/api/ui-config', (req, res) => {
+        res.json({
+            hideLogs:     config.HIDE_LOGS     || false,
+            hideSettings: config.HIDE_SETTINGS || false,
+        });
+    });
+
     // ── Chrome settings ───────────────────────────────────────────────────
     router.get('/api/settings', (req, res) => {
         let saved = {};
