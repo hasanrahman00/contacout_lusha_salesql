@@ -182,7 +182,7 @@ async function setupNetworkCapture(context, browser) {
         const wsUrl = await new Promise((resolve, reject) => {
             const req = http.get(
                 `http://${cdpHost}:${port}/json/version`,
-                { timeout: 3000 },
+                { timeout: 3000, headers: { 'Host': 'localhost' } },
                 (res) => {
                     let d = '';
                     res.on('data', c => d += c);
@@ -196,8 +196,10 @@ async function setupNetworkCapture(context, browser) {
         });
 
         const u     = new URL(wsUrl);
-        // Chrome returns ws://127.0.0.1:... but inside Docker we connect via CDP_HOST
+        // Chrome returns ws://localhost/... (no port) when Host: localhost is sent.
+        // Patch hostname and port so it reaches Chrome from inside Docker.
         u.hostname  = cdpHost;
+        u.port      = String(port);
         const wsKey = crypto.randomBytes(16).toString('base64');
 
         // ── Open raw TCP + HTTP Upgrade handshake ────────────────────────
@@ -211,7 +213,7 @@ async function setupNetworkCapture(context, browser) {
                     Upgrade:               'websocket',
                     'Sec-WebSocket-Key':   wsKey,
                     'Sec-WebSocket-Version': '13',
-                    Host:                  u.host,
+                    Host:                  `localhost:${u.port || 80}`,
                 },
             });
             req.on('upgrade', (_res, sock) => resolve(sock));

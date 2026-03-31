@@ -1,6 +1,10 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 # VikiLeads v3.6.0 — Protected Docker Build
 # ═══════════════════════════════════════════════════════════════════════════════
+# Two-tier obfuscation:
+#   HEAVY — server, config, routes, jobs, pure-logic tasks (no page.evaluate)
+#   LIGHT — browser-interaction tasks (page.evaluate breaks with heavy obfuscation)
+# ═══════════════════════════════════════════════════════════════════════════════
 
 # ── STAGE 1: Build + Obfuscate ──────────────────────────────────────────────
 FROM node:20-slim AS builder
@@ -18,24 +22,75 @@ COPY jobs/ ./jobs/
 COPY tasks/ ./tasks/
 COPY public/ ./public/
 
-RUN find . -name '*.js' -not -path './node_modules/*' -not -path './public/*' | while read f; do \
-      echo "  Obfuscating: $f"; \
-      javascript-obfuscator "$f" \
-        --output "$f" \
-        --compact true \
-        --control-flow-flattening true \
-        --control-flow-flattening-threshold 0.75 \
-        --dead-code-injection true \
-        --dead-code-injection-threshold 0.4 \
-        --identifier-names-generator hexadecimal \
-        --rename-globals false \
-        --self-defending true \
-        --string-array true \
-        --string-array-encoding rc4 \
-        --string-array-threshold 0.75 \
-        --transform-object-keys true \
-        --unicode-escape-sequence true; \
-    done && echo "All files obfuscated"
+# ── HEAVY obfuscation: files that NEVER touch page.evaluate ─────────────────
+RUN for f in \
+      server.js config.js job-runner.js \
+      routes/router.js routes/api.js \
+      jobs/manager.js \
+      tasks/connectBrowser.js \
+      tasks/launchChrome.js \
+      tasks/setupNetworkCapture.js \
+      tasks/mergeData.js \
+      tasks/generateCSV.js \
+      tasks/xlsxWriter.js \
+      tasks/deepseekEnrich.js \
+      tasks/emailFilter.js \
+      tasks/enrichLocation.js \
+      tasks/countries.js \
+      tasks/nameCleaner.js \
+      tasks/pageTracker.js; \
+    do \
+      if [ -f "$f" ]; then \
+        echo "  [HEAVY] $f"; \
+        javascript-obfuscator "$f" \
+          --output "$f" \
+          --compact true \
+          --control-flow-flattening true \
+          --control-flow-flattening-threshold 0.75 \
+          --dead-code-injection true \
+          --dead-code-injection-threshold 0.4 \
+          --identifier-names-generator hexadecimal \
+          --rename-globals false \
+          --self-defending false \
+          --string-array true \
+          --string-array-encoding rc4 \
+          --string-array-threshold 0.75 \
+          --transform-object-keys true \
+          --unicode-escape-sequence true; \
+      fi; \
+    done
+
+# ── LIGHT obfuscation: files that use page.evaluate (browser context) ────────
+# No string-array, no control-flow-flattening — these break page.evaluate
+RUN for f in \
+      tasks/activateContactOut.js \
+      tasks/activateLusha.js \
+      tasks/activateSalesQL.js \
+      tasks/extractLusha.js \
+      tasks/extractSalesQL.js \
+      tasks/getPageInfo.js \
+      tasks/linkedinEnrich.js \
+      tasks/navigateNextPage.js \
+      tasks/navigateToLinkedIn.js \
+      tasks/scrollDashboard.js; \
+    do \
+      if [ -f "$f" ]; then \
+        echo "  [LIGHT] $f"; \
+        javascript-obfuscator "$f" \
+          --output "$f" \
+          --compact true \
+          --control-flow-flattening false \
+          --dead-code-injection false \
+          --identifier-names-generator hexadecimal \
+          --rename-globals false \
+          --self-defending false \
+          --string-array false \
+          --transform-object-keys false \
+          --unicode-escape-sequence true; \
+      fi; \
+    done
+
+RUN echo "All files obfuscated"
 
 
 # ── STAGE 2: Locked-Down Runtime ─────────────────────────────────────────────

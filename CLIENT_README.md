@@ -33,17 +33,17 @@ Close ALL Chrome windows first, then:
 
 **Windows (Command Prompt):**
 ```
-"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir="C:\Chrome_Scraper"
+"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --remote-allow-origins=* --user-data-dir="C:\Chrome_Scraper"
 ```
 
 **Windows (PowerShell):**
 ```
-& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir="C:\Chrome_Scraper"
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --remote-allow-origins=* --user-data-dir="C:\Chrome_Scraper"
 ```
 
 **Mac:**
 ```
-/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222 --user-data-dir="$HOME/Chrome_Scraper"
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222 --remote-allow-origins=* --user-data-dir="$HOME/Chrome_Scraper"
 ```
 
 In Chrome: log into LinkedIn Sales Navigator, activate ContactOut + Lusha + SalesQL.
@@ -104,7 +104,7 @@ docker compose up -d
 
 | Problem | Fix |
 |---------|-----|
-| Cannot connect to Chrome | Chrome must be running with `--remote-debugging-port=9222` |
+| Cannot connect to Chrome | Chrome must be running with `--remote-debugging-port=9222 --remote-allow-origins=*` |
 | Sales Nav not found | Log into Sales Navigator in the debug Chrome |
 | Extension data missing | Click extension icon once to activate |
 | Container error | Run `docker compose logs` |

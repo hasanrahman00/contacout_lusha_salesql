@@ -6,21 +6,29 @@
 // ═════════════════════════════════════════════════════════════════
 
 const { spawn } = require('child_process');
+const http = require('http');
 const config = require('../config');
 
 async function isChromeRunning(port) {
-    try {
-        const res = await fetch(`http://${config.CDP_HOST}:${port}/json/version`, {
-            signal: AbortSignal.timeout(3000),
-        });
-        if (res.ok) {
-            const data = await res.json();
-            if (data && data.Browser) return true;
-        }
-    } catch {
-        // Not running or not reachable
-    }
-    return false;
+    // Use http.get instead of fetch — fetch ignores Host header overrides
+    return new Promise((resolve) => {
+        const req = http.get(
+            `http://${config.CDP_HOST}:${port}/json/version`,
+            { timeout: 3000, headers: { 'Host': 'localhost' } },
+            (res) => {
+                let d = '';
+                res.on('data', c => d += c);
+                res.on('end', () => {
+                    try {
+                        const data = JSON.parse(d);
+                        resolve(!!(data && data.Browser));
+                    } catch { resolve(false); }
+                });
+            }
+        );
+        req.on('error', () => resolve(false));
+        req.on('timeout', () => { req.destroy(); resolve(false); });
+    });
 }
 
 async function launchChrome(chromePath, port, userDataDir) {
