@@ -67,25 +67,63 @@ async function getContactOutButtonFrame(page) {
         } catch {}
     }
 
-    // Method 3: Brute force — check all iframes for contactout content
+    // Method 3: Brute force — check ALL iframes via contentFrame().url()
+    // KEY FIX: Extension-injected iframes often have NO src attribute in the DOM.
+    // The extension navigates them programmatically, so we must check the
+    // contentFrame's actual URL instead of relying on getAttribute('src').
     const allIframes = await page.$$('iframe');
     for (const iframeEl of allIframes) {
         try {
-            const src = await iframeEl.getAttribute('src');
-            if (src && src.includes('contactout')) {
+            const frame = await iframeEl.contentFrame();
+            if (!frame) continue;
+            const frameUrl = frame.url();
+            if (frameUrl && frameUrl.includes('contactout.com/extension/action')) {
+                return frame;
+            }
+        } catch {}
+    }
+
+    // Method 4: Find by visual fingerprint — small iframe with ContactOut's
+    // purple box-shadow: rgba(101, 82, 255, ...) and ~32px width
+    for (const iframeEl of allIframes) {
+        try {
+            const match = await page.evaluate((el) => {
+                const s = window.getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+                // ContactOut button: ~32px wide, ~84px tall, purple shadow
+                const isSmall = rect.width > 20 && rect.width < 60 && rect.height > 50 && rect.height < 120;
+                const hasPurpleShadow = (s.boxShadow || '').includes('101') && (s.boxShadow || '').includes('82') && (s.boxShadow || '').includes('255');
+                return isSmall && hasPurpleShadow;
+            }, iframeEl);
+
+            if (match) {
                 const frame = await iframeEl.contentFrame();
                 if (frame) {
-                    // Verify it has the floating button inside
-                    const hasBtn = await frame.evaluate(() => {
-                        return !!document.querySelector('#floating-button');
-                    }).catch(() => false);
-                    if (hasBtn) return frame;
+                    console.log('✅ [ContactOut] Found button iframe via visual fingerprint');
+                    return frame;
                 }
             }
         } catch {}
     }
 
-    // Method 4: Check frames that have the floating button DOM
+    // Method 5: Find any small contactout iframe by checking contentFrame URL broadly
+    for (const iframeEl of allIframes) {
+        try {
+            const frame = await iframeEl.contentFrame();
+            if (!frame) continue;
+            const frameUrl = frame.url();
+            if (frameUrl && frameUrl.includes('contactout')) {
+                // Verify it's the button (small) not the sidebar (large)
+                const isSmall = await page.evaluate((el) => {
+                    const rect = el.getBoundingClientRect();
+                    return rect.width < 100;
+                }, iframeEl);
+                if (isSmall) return frame;
+            }
+        } catch {}
+    }
+
+    // Method 6: Check frames that have the floating button DOM
     for (const frame of frames) {
         try {
             const url = frame.url();
@@ -129,7 +167,7 @@ async function getContactOutSidebarFrame(page) {
         } catch {}
     }
 
-    // Method 2: Find large ContactOut iframe in DOM
+    // Method 2: Find large ContactOut iframe in DOM by src attribute
     const allIframes = await page.$$('iframe');
     for (const iframeEl of allIframes) {
         try {
@@ -141,11 +179,30 @@ async function getContactOutSidebarFrame(page) {
         } catch {}
     }
 
-    // Method 3: Find by style — sidebar is typically 640px wide, position:fixed
+    // Method 3: Check ALL iframes via contentFrame().url() — handles no-src iframes
     for (const iframeEl of allIframes) {
         try {
-            const src = await iframeEl.getAttribute('src');
-            if (!src || !src.includes('contactout')) continue;
+            const frame = await iframeEl.contentFrame();
+            if (!frame) continue;
+            const frameUrl = frame.url();
+            if (frameUrl && frameUrl.includes('contactout.com') && !frameUrl.includes('/extension/action')) {
+                // Verify it's the sidebar (large width)
+                const isLarge = await page.evaluate((el) => {
+                    const rect = el.getBoundingClientRect();
+                    return rect.width > 200;
+                }, iframeEl);
+                if (isLarge) return frame;
+            }
+        } catch {}
+    }
+
+    // Method 4: Find by style — sidebar is typically 640px wide, position:fixed
+    for (const iframeEl of allIframes) {
+        try {
+            const frame = await iframeEl.contentFrame();
+            if (!frame) continue;
+            const frameUrl = frame.url();
+            if (!frameUrl || !frameUrl.includes('contactout')) continue;
 
             const isLarge = await page.evaluate((el) => {
                 const style = el.style || {};
@@ -153,10 +210,7 @@ async function getContactOutSidebarFrame(page) {
                 return rect.width > 200 || (style.width && parseInt(style.width) > 200);
             }, iframeEl);
 
-            if (isLarge) {
-                const frame = await iframeEl.contentFrame();
-                if (frame) return frame;
-            }
+            if (isLarge) return frame;
         } catch {}
     }
 
@@ -197,8 +251,48 @@ async function activateContactOut(page) {
         }
 
         if (!buttonFrame) {
-            console.log('⚠️ [ContactOut] Button iframe not found — extension may not be installed');
-            return false;
+            // ── FALLBACK: Find iframe element by visual fingerprint and click via coordinates ──
+            // Extension iframes may block contentFrame() access but we can still click them
+            console.log('🟣 [ContactOut] Trying coordinate-click fallback...');
+            const allIframes = await page.$$('iframe');
+            let clickedViaCoords = false;
+
+            for (const iframeEl of allIframes) {
+                try {
+                    const match = await page.evaluate((el) => {
+                        const s = window.getComputedStyle(el);
+                        const rect = el.getBoundingClientRect();
+                        const isSmall = rect.width > 20 && rect.width < 60 && rect.height > 50 && rect.height < 120;
+                        const hasPurpleShadow = (s.boxShadow || '').includes('101') && (s.boxShadow || '').includes('255');
+                        const isFixed = s.position === 'fixed';
+                        // Also check by id pattern — ContactOut uses random-looking short ids
+                        const hasContactOutStyle = (s.borderRadius || '').includes('4px') && rect.width < 50;
+                        return (isSmall && (hasPurpleShadow || isFixed)) || (isSmall && hasContactOutStyle);
+                    }, iframeEl);
+
+                    if (match) {
+                        const box = await iframeEl.boundingBox();
+                        if (box) {
+                            const x = box.x + box.width / 2;
+                            const y = box.y + box.height / 2;
+                            await page.mouse.click(x, y);
+                            console.log(`✅ [ContactOut] Clicked button iframe via coordinates (${Math.round(x)}, ${Math.round(y)})`);
+                            clickedViaCoords = true;
+                            break;
+                        }
+                    }
+                } catch {}
+            }
+
+            if (!clickedViaCoords) {
+                console.log('⚠️ [ContactOut] Button iframe not found — extension may not be installed');
+                return false;
+            }
+
+            // Wait for sidebar to open after coordinate click
+            console.log('🟣 [ContactOut] Waiting for sidebar to open...');
+            await humanDelay(page, 400, 800);
+            return true;
         }
 
         console.log('✅ [ContactOut] Button iframe found');

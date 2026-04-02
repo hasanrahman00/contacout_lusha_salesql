@@ -12,7 +12,7 @@ const path = require('path');
 const { Router } = require('./routes/router');
 const { register } = require('./routes/api');
 
-const PORT = parseInt(process.argv[2] || process.env.PORT || '3002', 10);
+const PORT = parseInt(process.argv[2] || process.env.PORT || '3003', 10);
 
 const app = new Router();
 
